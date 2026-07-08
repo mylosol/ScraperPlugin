@@ -1,6 +1,6 @@
 # QA Update Scraper — Chrome Extension
 
-A private Chrome Extension that scrapes Azure DevOps Sprint Taskboards/Backlogs
+A private Chrome Extension that scrapes an Azure DevOps **Kanban Board**
 and compiles QA Update email tables — no manual copy-pasting required.
 
 ---
@@ -10,7 +10,7 @@ and compiles QA Update email tables — no manual copy-pasting required.
 1. Open Chrome and go to `chrome://extensions`
 2. Enable **Developer mode** (top-right toggle)
 3. Click **Load unpacked**
-4. Select the `qa-update-extension` folder
+4. Select this repo's folder (`ScraperPlugin`)
 5. The **QA** icon will appear in your toolbar (pin it for easy access)
 
 ---
@@ -23,45 +23,91 @@ enter a table name, e.g.:
 - `Cases pushed to feature branch`
 - `Cases pushed to develop`
 
-### Step 2 — Scrape pages
-1. Navigate to an Azure DevOps sprint **Taskboard** or **Backlog**
+### Step 2 — Scrape the board
+1. Navigate to your team's Azure DevOps **Kanban Board**
+   (`.../_boards/board/t/{team}/{Backlog level}`)
 2. Click the extension icon
 3. Click **Scrape This Page**
-4. Repeat for as many sprint board pages as needed (data accumulates)
+
+Every card visible on the board — any column — is scraped in one pass; the
+active filter (see below) determines which rows actually show up in the
+table. Re-scraping is safe: duplicate rows are skipped automatically, so
+you can scrape again after the board changes to pick up new/moved cards.
 
 ### Step 3 — Copy the table
 - **📋 Copy for Email** — copies a rich-text HTML table; paste directly into
   Outlook, Gmail, etc. Formatting and color-coded status badges are preserved.
 - **📄 Copy Plain Text** — copies a fixed-width plain-text table.
 
+Both exports only include rows matching the **active filter set**.
+
 ### Step 4 — Start the next table
 Click **+ New Table**, enter a new name, and repeat the scrape process.
 
 ---
 
-## Status Logic
+## Filter Rules (🔎)
 
-| Email Status | PBI/Bug State | Code Solution | Code Review | Dev Test | QA Task State |
-|---|---|---|---|---|---|
-| **Ready** | Committed | Done | Done | Done | To Do |
-| **QA Test in progress** | Committed | Done | Done | Done | In Progress |
-| **Blocked** | Blocked | Done | Done | Done | To Do |
-| **Pending Dev Test** | Committed | Done | Done | To Do | (any) |
-| **Dev Test in progress** | Committed | Done | Done | In Progress | (any) |
+Click the **🔎** button in the header to open the rule builder. It's modeled
+on the Azure DevOps Query editor:
 
-**Notes about the logic:**
-- If a task type (e.g., Code Review) doesn't exist on a PBI, that check is skipped.
-- Multiple QA tasks on one PBI produce separate rows (one per person/branch).
-- If a QA task title contains "Feature Branch" or "Develop", that is noted in the Notes column.
-- "Integrated in Build" comes from the `Microsoft.VSTS.Build.IntegrationBuild` field.
+- Each row has **And/Or**, **Field**, **Operator**, **Value**.
+- Rows are combined **left to right** using each row's own And/Or (the
+  first row's And/Or is ignored — there's nothing before it). This is a
+  flat list, not nested groups.
+- **+ Add rule** appends a row; the **✕** on a row deletes it.
+- A card must match the combined result of all rows to appear in the table.
+  With zero rules, every scraped card is shown.
 
-### Recognized task name patterns
-| Category | Matches (case-insensitive) |
+### Available fields
+| Field | Source |
 |---|---|
-| Code Solution | `Code the Solution`, `Code Solution` |
-| Code Review | `Code Review` |
-| Dev Test | `Dev Test` (but NOT `Dev Automated Test`) |
-| QA Task | Any title containing `QA` |
+| Column | The card's Kanban board column (`System.BoardColumn`) |
+| State | The parent work item's state |
+| Work Item Type | e.g. Product Backlog Item, Bug, User Story |
+| Title | The parent work item's title |
+| Parent Assigned To | The parent work item's assignee |
+| QA Task Assigned To | The assignee of a QA task on the card (if any) |
+| QA Task Title | The title of a QA task on the card (if any) |
+| Has QA Task | True/False — whether the card has a task whose title starts with "QA" |
+
+Operators depend on the field type: text fields get `is`, `is not`,
+`contains`, `does not contain`, `in`, `not in`, `is empty`, `is not empty`
+(`in`/`not in` take a comma-separated list of values); the boolean field
+gets `is` with a True/False value.
+
+### Default filter set
+Ships preloaded as **"Ready & In QA (default)"**:
+
+> Column **in** `Ready For QA, In QA`
+
+### Saved filter sets
+Next to the rule rows, use the **filter set** dropdown to switch between
+saved sets, or:
+- **+ New** — save the rules you're editing as a new named set
+- **✏ Rename** — rename the current set
+- **🗑 Delete** — delete the current set (at least one set must always exist)
+
+Filter sets are saved to `chrome.storage.sync`, so they follow your signed-in
+Chrome profile and survive closing the popup. Click **Apply** to save your
+edits, or **Cancel** to discard them and revert to how the set looked when
+you opened the builder.
+
+---
+
+## Table columns
+
+| Column | What it shows |
+|---|---|
+| Case # | Link to the parent work item |
+| Title | Parent work item title |
+| Assigned To | Both **QA Task** and **Parent** assignees, with a per-row dropdown to pick which one is "active" (bolded here, and the one used for email/text export). Defaults to QA Task if the card has one, otherwise Parent. |
+| Status | A friendly label — `Ready` for the `Ready For QA` column, `In Progress` for the `In QA` column, otherwise the raw board column name. The real board column is shown as smaller subtext when it differs from the label. |
+| Notes | Linked build number (if any) and Feature Branch/Develop annotations for QA tasks |
+
+Each row also has a **✕** to remove it from the table, and rows can be added
+manually via **+ Add Row** (ADO lookup by case number/URL, or fully manual
+entry).
 
 ---
 
@@ -79,39 +125,38 @@ Click the **⚙** gear icon to configure:
 
 | Setting | Default | Description |
 |---|---|---|
-| Integrated in Build field | `Microsoft.VSTS.Build.IntegrationBuild` | ADO field name for build version |
-| Status sort order | By priority | How rows are sorted in the output |
+| Row sort order | By Case # (ascending) | Sort by Case # or alphabetically by board Column |
 
 ---
 
 ## Supported Azure DevOps Formats
 
-- `https://dev.azure.com/{org}/{project}/_sprints/taskboard/{team}/...`
-- `https://dev.azure.com/{org}/{project}/_sprints/backlog/{team}/...`
-- `https://{org}.visualstudio.com/{project}/_sprints/taskboard/{team}/...`
+- `https://dev.azure.com/{org}/{project}/_boards/board/t/{team}/{Backlog level}`
+- `https://{org}.visualstudio.com/{project}/_boards/board/t/{team}/{Backlog level}`
 
 ---
 
 ## Troubleshooting
 
-**"Not an Azure DevOps sprint page"**  
-Make sure you are on a Sprint Taskboard or Backlog URL (see formats above).
-The extension does not work on the Boards, Repos, or Pipelines views.
+**"Not an Azure DevOps Kanban Board page"**
+Make sure you are on a Board URL (see formats above), not a Sprint
+Taskboard/Backlog, Repos, or Pipelines view.
 
-**"ADO API error 401"**  
+**"ADO API error 401"**
 You are not logged in. Log into Azure DevOps in Chrome, then try again.
 
-**"ADO API error 403"**  
+**"ADO API error 403"**
 Your account does not have permission to read this project's work items.
 
-**No items returned**  
-The current sprint may have no work items matching the QA Update criteria,
-or the sprint detection may have fallen back to the wrong iteration.
-Ensure you are on a sprint taskboard or backlog for the correct sprint.
+**No items returned**
+The board may have no cards matching the active filter set — open **🔎
+Filter Rules** and check what's configured, or switch to a broader/default
+set. If the table shows "0 of N items (filtered)", N items were scraped but
+none matched — that's the filter working as intended, not an error.
 
-**Content script not injecting**  
-The extension will automatically re-inject the content script on the first scrape.
-If it still fails, refresh the Azure DevOps page and try again.
+**Content script not injecting**
+The extension will automatically re-inject the content script on the first
+scrape. If it still fails, refresh the Azure DevOps page and try again.
 
 ---
 
@@ -119,4 +164,5 @@ If it still fails, refresh the Azure DevOps page and try again.
 
 All processing happens locally in your browser. No data is sent anywhere
 other than the Azure DevOps REST API of your organization (the same API
-your browser already calls when you view the sprint board).
+your browser already calls when you view the board), and — for saved
+filter sets — Chrome's own sync storage.
