@@ -420,24 +420,50 @@ body {
 
 .hint-text { font-size: 12px; color: var(--gray-500); padding: 8px 0; }
 
-/* ── Needs Review row ────────────────────────────────────────── */
-tr.row-needs-review td { background: #fffbea; }
-tr.row-needs-review:hover td { background: #fff6d0; }
+/* ── Rule builder ────────────────────────────────────────────── */
+.rule-rows { display: flex; flex-direction: column; gap: 8px; }
 
-.review-badge {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 1px 6px;
-  border-radius: 10px;
-  font-size: 10px;
-  font-weight: 700;
-  background: #fff3cd;
-  color: #856404;
-  border: 1px solid #f2c94c;
-  cursor: help;
-  vertical-align: middle;
-  white-space: nowrap;
+.rule-row {
+  display: grid;
+  grid-template-columns: 60px 130px 140px 1fr 26px;
+  gap: 6px;
+  align-items: center;
 }
+.rule-row select,
+.rule-row input {
+  font-size: 12px;
+  padding: 5px 7px;
+  border: 1px solid var(--gray-200);
+  border-radius: 4px;
+  font-family: var(--font);
+  color: var(--gray-900);
+  background: #fff;
+  width: 100%;
+}
+.rule-row select:focus,
+.rule-row input:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+.rule-row select:disabled,
+.rule-row input:disabled {
+  background: var(--gray-100);
+  color: var(--gray-500);
+}
+
+.btn-delete-rule {
+  background: none;
+  border: none;
+  color: var(--gray-200);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px;
+  border-radius: 3px;
+  line-height: 1;
+  justify-self: center;
+  transition: color .1s, background .1s;
+}
+.btn-delete-rule:hover { color: var(--red); background: var(--red-bg); }
 
 /* ── Spinner animation ───────────────────────────────────────── */
 @keyframes spin { to { transform: rotate(360deg); } }
