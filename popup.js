@@ -4,29 +4,35 @@
 
 // ── Constants ─────────────────────────────────────────────────
 
-const STATUS_STYLE = {
-  'QA Test in progress':   { bg: '#cce5ff', color: '#004085', chipBg: '#cce5ff', chipColor: '#004085' },
-  'Ready':                 { bg: '#d4edda', color: '#155724', chipBg: '#d4edda', chipColor: '#155724' },
-  'Pending Passing Build': { bg: '#fde8c8', color: '#7a3e00', chipBg: '#fde8c8', chipColor: '#7a3e00' },
-  'Blocked':               { bg: '#f8d7da', color: '#721c24', chipBg: '#f8d7da', chipColor: '#721c24' },
-  'Dev Test in progress':  { bg: '#e2d9f3', color: '#5a3489', chipBg: '#e2d9f3', chipColor: '#5a3489' },
-  'Pending Dev Test':      { bg: '#fff3cd', color: '#856404', chipBg: '#fff3cd', chipColor: '#856404' },
-};
+// Deterministic pastel palette for board-column badges (columns are
+// user-defined on a Kanban board, so we can't hardcode a color map).
+const COLUMN_PALETTE = [
+  { bg: '#cce5ff', color: '#004085' },
+  { bg: '#d4edda', color: '#155724' },
+  { bg: '#fde8c8', color: '#7a3e00' },
+  { bg: '#f8d7da', color: '#721c24' },
+  { bg: '#e2d9f3', color: '#5a3489' },
+  { bg: '#fff3cd', color: '#856404' },
+  { bg: '#d2f0ea', color: '#0f5c52' },
+];
+function styleForColumn(column) {
+  let hash = 0;
+  for (let i = 0; i < column.length; i++) hash = (hash * 31 + column.charCodeAt(i)) >>> 0;
+  return COLUMN_PALETTE[hash % COLUMN_PALETTE.length];
+}
 
-const DEFAULT_BUILD_FIELD = 'Microsoft.VSTS.Build.IntegrationBuild';
 const STORAGE_KEY = 'qaScraperTables';
 const SETTINGS_KEY = 'qaScraperSettings';
 
 // ── State ──────────────────────────────────────────────────────
 
 let state = {
-  tables:       [],   // [{id, name, items: [], pagesScraped, sprintName, createdAt}]
+  tables:       [],   // [{id, name, items: [], pagesScraped, boardName, createdAt}]
   activeTableId: null,
   view:         'new-table', // 'new-table' | 'main' | 'settings'
   scraping:     false,
   settings: {
-    buildField: DEFAULT_BUILD_FIELD,
-    sortOrder:  'priority',
+    sortOrder:  'id',
   },
 };
 
@@ -69,7 +75,6 @@ const DOM = {
     btnClearTable:    $('btn-clear-table'),
   },
   settings: {
-    buildFieldInput:  $('build-field-input'),
     sortOrderSelect:  $('sort-order-select'),
     btnSave:          $('btn-save-settings'),
     btnClose:         $('btn-close-settings'),
@@ -113,7 +118,7 @@ function createTable(name) {
     name:         name.trim(),
     items:        [],
     pagesScraped: 0,
-    sprintName:   '',
+    boardName:    '',
     createdAt:    new Date().toLocaleString(),
     pageSnapshots:[],  // [{pageUrl, itemIds, scrapedAt}]
   };
@@ -124,17 +129,24 @@ function createTable(name) {
 }
 
 function mergeItems(existing, incoming) {
-  // Merge incoming items; avoid duplicate (id, status, assignedTo) rows
-  const key = item => `${item.id}|${item.status}|${item.assignedTo}`;
-  const existingKeys = new Set(existing.map(key));
+  // Merge incoming items; avoid duplicate rows (rowKey already encodes card+column+task)
+  const existingKeys = new Set(existing.map(i => i.rowKey));
   const added = [];
   incoming.forEach(item => {
-    if (!existingKeys.has(key(item))) {
+    if (!existingKeys.has(item.rowKey)) {
       existing.push(item);
+      existingKeys.add(item.rowKey);
       added.push(item);
     }
   });
   return added;
+}
+
+// Which assignee to show for a row, honoring the per-row selector.
+function computeAssignedTo(item) {
+  if (item.assigneeSource === 'qaTask') return item.qaTaskAssignedTo || item.parentAssignedTo || 'Unassigned';
+  if (item.assigneeSource === 'parent') return item.parentAssignedTo || 'Unassigned';
+  return item.qaTaskAssignedTo || item.parentAssignedTo || 'Unassigned';
 }
 
 // ── View management ────────────────────────────────────────────
@@ -159,9 +171,9 @@ function renderMain() {
   showView('main');
   updateHeaderLabel();
 
-  // Sprint strip
-  if (table.sprintName) {
-    DOM.main.sprintName.textContent    = table.sprintName;
+  // Board strip
+  if (table.boardName) {
+    DOM.main.sprintName.textContent    = table.boardName;
     DOM.main.pagesScraped.textContent  = table.pagesScraped;
     DOM.main.sprintStrip.style.display = '';
   } else {
@@ -174,7 +186,7 @@ function renderMain() {
   if (table.items.length === 0) {
     DOM.main.tableWrapper.style.display = 'none';
     DOM.main.chipsRow.style.display     = 'none';
-    setStatus('idle', 'Navigate to a sprint board and click Scrape.');
+    setStatus('idle', 'Navigate to a Kanban board and click Scrape.');
     return;
   }
 
@@ -191,17 +203,15 @@ function renderMain() {
 
 function renderChips(items) {
   const counts = {};
-  items.forEach(i => { counts[i.status] = (counts[i.status] || 0) + 1; });
+  items.forEach(i => { counts[i.column] = (counts[i.column] || 0) + 1; });
   DOM.main.chipsRow.innerHTML = '';
-  const order = ['QA Test in progress','Ready','Blocked','Dev Test in progress','Pending Dev Test'];
-  order.forEach(s => {
-    if (!counts[s]) return;
-    const st = STATUS_STYLE[s] || {};
+  Object.keys(counts).sort().forEach(col => {
+    const st = styleForColumn(col);
     const chip = document.createElement('span');
     chip.className = 'chip';
-    chip.style.background = st.chipBg || '#eee';
-    chip.style.color       = st.chipColor || '#333';
-    chip.textContent = `${s}: ${counts[s]}`;
+    chip.style.background = st.bg;
+    chip.style.color       = st.color;
+    chip.textContent = `${col}: ${counts[col]}`;
     DOM.main.chipsRow.appendChild(chip);
   });
   DOM.main.chipsRow.style.display = '';
@@ -215,31 +225,40 @@ function removeItem(rowKey) {
   renderMain();
 }
 
+function setAssigneeSource(rowKey, source) {
+  const table = getActiveTable();
+  if (!table) return;
+  const item = table.items.find(i => i.rowKey === rowKey);
+  if (!item) return;
+  item.assigneeSource = source;
+  saveState();
+  renderMain();
+}
+
 function renderTable(items) {
   const sorted = sortItems(items);
   DOM.main.resultsBody.innerHTML = sorted.map(item => {
-    const st       = STATUS_STYLE[item.status] || { bg: '#eee', color: '#333' };
+    const st       = styleForColumn(item.column);
     const safeKey  = escHtml(item.rowKey || '');
-    const reviewTip = item.needsReview
-      ? `Missing standard tasks: ${item.missingTasks.join(', ')} — please verify before including`
-      : '';
-    const reviewBadge = item.needsReview
-      ? `<span class="review-badge" title="${escHtml(reviewTip)}">⚠ Review</span>`
-      : '';
-    const rowClass = item.needsReview ? ' class="row-needs-review"' : '';
     return `
-      <tr${rowClass}>
+      <tr>
         <td class="col-delete">
           <button class="btn-delete" data-key="${safeKey}" title="Remove this row">✕</button>
         </td>
         <td class="col-case">
           <a class="case-link" href="${escHtml(item.url)}" target="_blank">#${item.id}</a>
         </td>
-        <td class="col-title">${escHtml(item.title)}${reviewBadge}</td>
-        <td class="col-person">${escHtml(item.assignedTo)}</td>
+        <td class="col-title">${escHtml(item.title)}</td>
+        <td class="col-person">
+          ${escHtml(computeAssignedTo(item))}
+          <select class="assignee-source-select" data-key="${safeKey}" title="Which assignee to display">
+            <option value="qaTask"${item.assigneeSource === 'qaTask' ? ' selected' : ''}${item.hasQaTask ? '' : ' disabled'}>QA Task</option>
+            <option value="parent"${item.assigneeSource === 'parent' ? ' selected' : ''}>Parent</option>
+          </select>
+        </td>
         <td class="col-status">
           <span class="status-badge" style="background:${st.bg};color:${st.color}">
-            ${escHtml(item.status)}
+            ${escHtml(item.column)}
           </span>
         </td>
         <td class="col-notes">${escHtml(item.notes || '')}</td>
@@ -249,22 +268,17 @@ function renderTable(items) {
   DOM.main.resultsBody.querySelectorAll('.btn-delete').forEach(btn => {
     btn.addEventListener('click', () => removeItem(btn.dataset.key));
   });
+  DOM.main.resultsBody.querySelectorAll('.assignee-source-select').forEach(sel => {
+    sel.addEventListener('change', () => setAssigneeSource(sel.dataset.key, sel.value));
+  });
 }
 
 function sortItems(items) {
-  const STATUS_ORDER = {
-    'QA Test in progress':   1,
-    'Ready':                 2,
-    'Pending Passing Build': 3,
-    'Blocked':               4,
-    'Dev Test in progress':  5,
-    'Pending Dev Test':      6,
-  };
   const sorted = [...items];
-  if (state.settings.sortOrder === 'id') {
-    sorted.sort((a, b) => a.id - b.id);
+  if (state.settings.sortOrder === 'column') {
+    sorted.sort((a, b) => a.column.localeCompare(b.column) || a.id - b.id);
   } else {
-    sorted.sort((a, b) => (STATUS_ORDER[a.status] || 9) - (STATUS_ORDER[b.status] || 9));
+    sorted.sort((a, b) => a.id - b.id);
   }
   return sorted;
 }
@@ -305,14 +319,14 @@ async function doScrape() {
   if (!table) { showView('newTable'); state.scraping = false; return; }
 
   DOM.main.btnScrape.disabled = true;
-  setStatus('loading', 'Scraping sprint data via Azure DevOps API…');
+  setStatus('loading', 'Scraping board data via Azure DevOps API…');
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
     // Verify it's an ADO page
     if (!tab.url || (!tab.url.includes('dev.azure.com') && !tab.url.includes('visualstudio.com'))) {
-      throw new Error('Please navigate to an Azure DevOps sprint Taskboard or Backlog first.');
+      throw new Error('Please navigate to an Azure DevOps Kanban Board first.');
     }
 
     const response = await new Promise((resolve, reject) => {
@@ -344,10 +358,10 @@ async function doScrape() {
       throw new Error(response?.error || 'Unknown scraping error.');
     }
 
-    const { items, sprintName, scrapedAt, pageUrl } = response.data;
+    const { items, boardName, scrapedAt, pageUrl } = response.data;
 
-    // Update sprint name if not set
-    if (sprintName && !table.sprintName) table.sprintName = sprintName;
+    // Update board name if not set
+    if (boardName && !table.boardName) table.boardName = boardName;
 
     // Merge items, track snapshot for undo
     const snapshotBefore = table.items.map(i => ({ ...i }));
@@ -386,7 +400,7 @@ function undoLastPage() {
   const last = table.pageSnapshots.pop();
   table.items = last.snapshotBefore;
   table.pagesScraped = Math.max(0, table.pagesScraped - 1);
-  if (table.pagesScraped === 0) table.sprintName = '';
+  if (table.pagesScraped === 0) table.boardName = '';
 
   saveState();
   renderMain();
@@ -398,13 +412,13 @@ function undoLastPage() {
 function buildHtmlTable(items) {
   const sorted = sortItems(items);
   const rows = sorted.map(item => {
-    const st = STATUS_STYLE[item.status] || { bg: '#eee', color: '#333' };
+    const st = styleForColumn(item.column);
     const caseCell = `<a href="${item.url}" style="color:#0078d4;font-weight:600;text-decoration:none">#${item.id}</a>`;
-    const badge    = `<span style="display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;background:${st.bg};color:${st.color}">${escHtml(item.status)}</span>`;
+    const badge    = `<span style="display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;background:${st.bg};color:${st.color}">${escHtml(item.column)}</span>`;
     return `    <tr>
       <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;white-space:nowrap">${caseCell}</td>
       <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0">${escHtml(item.title)}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;white-space:nowrap">${escHtml(item.assignedTo)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;white-space:nowrap">${escHtml(computeAssignedTo(item))}</td>
       <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0">${badge}</td>
       <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0">${escHtml(item.notes || '')}</td>
     </tr>`;
@@ -421,7 +435,7 @@ function buildHtmlTable(items) {
       <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0;white-space:nowrap">Case #</th>
       <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Title</th>
       <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0;white-space:nowrap">Assigned To</th>
-      <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Status</th>
+      <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Column</th>
       <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Notes</th>
     </tr>
   </thead>
@@ -435,12 +449,12 @@ function buildPlainText(items) {
   const sorted = sortItems(items);
   const table = getActiveTable();
   const header = table ? `${table.name}\n${'─'.repeat(table.name.length)}\n` : '';
-  const cols = ['Case #', 'Title', 'Assigned To', 'Status', 'Notes'];
+  const cols = ['Case #', 'Title', 'Assigned To', 'Column', 'Notes'];
 
   // Calculate column widths
   const widths = cols.map((c, i) => {
     const vals = sorted.map(item => {
-      const row = [`#${item.id}`, item.title, item.assignedTo, item.status, item.notes || ''];
+      const row = [`#${item.id}`, item.title, computeAssignedTo(item), item.column, item.notes || ''];
       return row[i] || '';
     });
     return Math.max(c.length, ...vals.map(v => v.length));
@@ -451,7 +465,7 @@ function buildPlainText(items) {
   const headerRow = cols.map((c, i) => pad(c, widths[i])).join('  ');
 
   const rows = sorted.map(item => {
-    const row = [`#${item.id}`, item.title, item.assignedTo, item.status, item.notes || ''];
+    const row = [`#${item.id}`, item.title, computeAssignedTo(item), item.column, item.notes || ''];
     return row.map((v, i) => pad(v, widths[i])).join('  ');
   });
 
@@ -592,7 +606,7 @@ function renderLookupResult(data) {
   const link = $('lookup-case-link');
   link.textContent = `#${data.id}`;
   link.href = data.url;
-  $('lookup-case-title').textContent = data.title;
+  $('lookup-case-title').textContent = `${data.title} — ${data.column} · ${data.parentAssignedTo}`;
 
   const list = $('lookup-task-list');
   list.innerHTML = '';
@@ -609,20 +623,12 @@ function renderLookupResult(data) {
     item.className = 'task-item';
     item.dataset.taskId = task.id;
 
-    // Default status derived from task state
-    const defaultStatus = inferStatus(task.state);
-
     item.innerHTML = `
       <input type="checkbox" class="task-checkbox" id="task-cb-${task.id}" />
       <div class="task-item-body">
         <label class="task-item-title" for="task-cb-${task.id}">${escHtml(task.title)}</label>
         <div class="task-item-meta">${escHtml(task.state)} · ${escHtml(task.assignedTo)}</div>
         <div class="task-item-controls">
-          <select class="task-status-select" title="Status for this row">
-            ${Object.keys(STATUS_STYLE).map(s =>
-              `<option value="${escHtml(s)}"${s === defaultStatus ? ' selected' : ''}>${escHtml(s)}</option>`
-            ).join('')}
-          </select>
           <input class="task-notes-input" type="text"
             placeholder="Notes (optional)"
             value="${escHtml(data.buildNote || '')}" />
@@ -647,14 +653,6 @@ function renderLookupResult(data) {
   $('lookup-result').style.display = '';
 }
 
-// Infer a reasonable default status from the raw ADO task state
-function inferStatus(taskState) {
-  if (taskState === 'In Progress') return 'QA Test in progress';
-  if (taskState === 'To Do')       return 'Ready';
-  if (taskState === 'Done')        return 'Ready';
-  return 'Ready';
-}
-
 function addSelectedRows() {
   if (!lookupResult) return;
   const table = getActiveTable();
@@ -667,26 +665,28 @@ function addSelectedRows() {
     const cb = item.querySelector('.task-checkbox');
     if (!cb.checked) return;
 
-    const taskId   = item.dataset.taskId;
-    const task     = lookupResult.tasks.find(t => String(t.id) === String(taskId));
-    const status   = item.querySelector('.task-status-select').value;
-    const notes    = item.querySelector('.task-notes-input').value.trim();
-    const assignedTo = task ? task.assignedTo : 'Unassigned';
-    const rowKey   = `${lookupResult.id}|${status}|${assignedTo}`;
+    const taskId = item.dataset.taskId;
+    const task   = lookupResult.tasks.find(t => String(t.id) === String(taskId));
+    const notes  = item.querySelector('.task-notes-input').value.trim();
+    const rowKey = `${lookupResult.id}|${lookupResult.column}|${taskId}`;
 
     // Skip if exact duplicate already in table
     if (table.items.some(i => i.rowKey === rowKey)) return;
 
     table.items.push({
-      id:          lookupResult.id,
-      title:       lookupResult.title,
-      url:         lookupResult.url,
-      assignedTo,
-      status,
+      id:               lookupResult.id,
+      title:            lookupResult.title,
+      url:              lookupResult.url,
+      workItemType:     '',
+      state:            lookupResult.state,
+      column:           lookupResult.column,
+      parentAssignedTo: lookupResult.parentAssignedTo,
+      qaTaskAssignedTo: task ? task.assignedTo : null,
+      qaTaskTitle:      task?.title || '',
+      qaTaskState:      task?.state || '',
+      hasQaTask:        true,
       notes,
-      taskTitle:   task?.title || '',
-      needsReview: false,
-      missingTasks:[],
+      assigneeSource:   'qaTask',
       rowKey,
     });
     added++;
@@ -708,7 +708,7 @@ function addManualRow() {
   const caseId   = $('manual-case').value.trim();
   const title    = $('manual-title').value.trim();
   const assigned = $('manual-assigned').value.trim() || 'Unassigned';
-  const status   = $('manual-status').value;
+  const column   = $('manual-column').value.trim() || '(No Column)';
   const notes    = $('manual-notes').value.trim();
 
   if (!caseId || !title) {
@@ -720,28 +720,32 @@ function addManualRow() {
     return;
   }
 
-  const rowKey = `${caseId}|${status}|${assigned}`;
+  const rowKey = `${caseId}|${column}|none`;
   if (table.items.some(i => i.rowKey === rowKey)) {
     showToast('This row already exists in the table.');
     return;
   }
 
   table.items.push({
-    id:          parseInt(caseId, 10),
+    id:               parseInt(caseId, 10),
     title,
-    url:         '', // no URL for manual rows
-    assignedTo:  assigned,
-    status,
+    url:              '', // no URL for manual rows
+    workItemType:     '',
+    state:            '',
+    column,
+    parentAssignedTo: assigned,
+    qaTaskAssignedTo: null,
+    qaTaskTitle:      '',
+    qaTaskState:      '',
+    hasQaTask:        false,
     notes,
-    taskTitle:   '',
-    needsReview: false,
-    missingTasks:[],
+    assigneeSource:   'parent',
     rowKey,
   });
 
   saveState();
   // Clear fields for next entry
-  $('manual-case').value = $('manual-title').value = $('manual-assigned').value = $('manual-notes').value = '';
+  $('manual-case').value = $('manual-title').value = $('manual-assigned').value = $('manual-column').value = $('manual-notes').value = '';
   showToast('＋ Row added.');
   renderMain();
 }
@@ -821,7 +825,7 @@ function wireEvents() {
     if (!confirm(`Clear all ${table.items.length} items from "${table.name}"? This cannot be undone.`)) return;
     table.items        = [];
     table.pagesScraped = 0;
-    table.sprintName   = '';
+    table.boardName    = '';
     table.pageSnapshots= [];
     saveState();
     renderMain();
@@ -830,13 +834,11 @@ function wireEvents() {
 
   // Settings
   DOM.header.btnSettings.addEventListener('click', () => {
-    DOM.settings.buildFieldInput.value  = state.settings.buildField;
     DOM.settings.sortOrderSelect.value  = state.settings.sortOrder;
     showView('settings');
   });
 
   DOM.settings.btnSave.addEventListener('click', () => {
-    state.settings.buildField = DOM.settings.buildFieldInput.value.trim() || DEFAULT_BUILD_FIELD;
     state.settings.sortOrder  = DOM.settings.sortOrderSelect.value;
     saveState();
     showToast('✓ Settings saved.');

@@ -44,9 +44,9 @@
   <!-- ── Main Scrape View ───────────────────────────────────── -->
   <section id="view-main" class="view" style="display:none">
 
-    <!-- Sprint info strip -->
+    <!-- Board info strip -->
     <div class="sprint-strip" id="sprint-strip" style="display:none">
-      <span class="sprint-label">Sprint:</span>
+      <span class="sprint-label">Board:</span>
       <span id="sprint-name-display"></span>
       <span class="sep">·</span>
       <span id="pages-scraped-display"></span> page(s) scraped
@@ -55,7 +55,7 @@
     <!-- Status bar -->
     <div id="status-bar" class="status-bar status-idle">
       <span id="status-icon">●</span>
-      <span id="status-text">Ready — navigate to a sprint board and click Scrape.</span>
+      <span id="status-text">Ready — navigate to a Kanban board and click Scrape.</span>
     </div>
 
     <!-- Action row -->
@@ -89,7 +89,7 @@
               <th>Case #</th>
               <th>Title</th>
               <th>Assigned To</th>
-              <th>Status</th>
+              <th>Column</th>
               <th>Notes</th>
             </tr>
           </thead>
@@ -111,19 +111,12 @@
     <div class="card">
       <h2 class="card-title">Settings</h2>
 
-      <label class="field-label" for="build-field-input">
-        "Integrated in Build" field name
-        <span class="field-hint">Azure DevOps internal field name</span>
-      </label>
-      <input id="build-field-input" class="text-input" type="text"
-             placeholder="Microsoft.VSTS.Build.IntegrationBuild" />
-
-      <label class="field-label mt-12" for="sort-order-select">
-        Status sort order
+      <label class="field-label" for="sort-order-select">
+        Row sort order
       </label>
       <select id="sort-order-select" class="text-input">
-        <option value="priority">By priority (QA in progress first)</option>
         <option value="id">By Case # (ascending)</option>
+        <option value="column">By Column (alphabetical)</option>
       </select>
 
       <div class="row gap-8 mt-16">
@@ -192,15 +185,8 @@
         <input id="manual-assigned" class="text-input" type="text" placeholder="Person's name" />
       </div>
       <div class="add-row-field">
-        <label class="field-label" for="manual-status">Status</label>
-        <select id="manual-status" class="text-input">
-          <option>QA Test in progress</option>
-          <option>Ready</option>
-          <option>Pending Passing Build</option>
-          <option>Blocked</option>
-          <option>Dev Test in progress</option>
-          <option>Pending Dev Test</option>
-        </select>
+        <label class="field-label" for="manual-column">Column</label>
+        <input id="manual-column" class="text-input" type="text" placeholder="e.g. Ready For QA" />
       </div>
       <div class="add-row-field">
         <label class="field-label" for="manual-notes">Notes</label>
