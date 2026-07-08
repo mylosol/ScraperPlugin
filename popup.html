@@ -21,7 +21,10 @@
         <div class="app-subtitle" id="current-table-label">No active table</div>
       </div>
     </div>
-    <button class="btn btn-icon" id="btn-settings" title="Settings">⚙</button>
+    <div class="row gap-6">
+      <button class="btn btn-icon" id="btn-open-rules" title="Filter Rules">🔎</button>
+      <button class="btn btn-icon" id="btn-settings" title="Settings">⚙</button>
+    </div>
   </header>
 
   <!-- ═══ VIEWS ════════════════════════════════════════════════ -->
@@ -89,7 +92,7 @@
               <th>Case #</th>
               <th>Title</th>
               <th>Assigned To</th>
-              <th>Column</th>
+              <th>Status</th>
               <th>Notes</th>
             </tr>
           </thead>
@@ -122,6 +125,38 @@
       <div class="row gap-8 mt-16">
         <button class="btn btn-primary flex-1" id="btn-save-settings">Save Settings</button>
         <button class="btn btn-ghost flex-1" id="btn-close-settings">Cancel</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Rule Builder View ──────────────────────────────────── -->
+  <section id="view-rules" class="view" style="display:none">
+    <div class="card">
+      <h2 class="card-title">Filter Rules</h2>
+      <p class="card-hint">
+        Rows are combined left to right using each row's And/Or — modeled on the
+        Azure DevOps Query editor. A card must match the combined result to appear
+        in the table.
+      </p>
+
+      <label class="field-label" for="rule-set-select">Filter set</label>
+      <div class="row gap-6 mt-12" style="align-items:stretch">
+        <select id="rule-set-select" class="text-input flex-1"></select>
+        <button class="btn btn-outline btn-sm" id="btn-new-rule-set" title="Save as a new filter set">＋ New</button>
+        <button class="btn btn-outline btn-sm" id="btn-rename-rule-set" title="Rename this filter set">✏</button>
+        <button class="btn btn-outline btn-sm" id="btn-delete-rule-set" title="Delete this filter set">🗑</button>
+      </div>
+
+      <div id="rule-rows" class="rule-rows mt-16"></div>
+      <div id="rule-empty-hint" class="hint-text" style="display:none">
+        No rules — every scraped card will be shown.
+      </div>
+
+      <button class="btn btn-outline btn-sm mt-12" id="btn-add-rule">＋ Add rule</button>
+
+      <div class="row gap-8 mt-16">
+        <button class="btn btn-primary flex-1" id="btn-apply-rules">Apply</button>
+        <button class="btn btn-ghost flex-1" id="btn-cancel-rules">Cancel</button>
       </div>
     </div>
   </section>
@@ -206,6 +241,7 @@
   <!-- ═══ TOAST ════════════════════════════════════════════════ -->
   <div id="toast" class="toast" aria-live="polite"></div>
 
+  <script src="rules.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

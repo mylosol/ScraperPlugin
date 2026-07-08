@@ -21,20 +21,40 @@ function styleForColumn(column) {
   return COLUMN_PALETTE[hash % COLUMN_PALETTE.length];
 }
 
+// Friendly label for the default QA workflow columns; any other board
+// column (custom rule sets can filter on anything) falls back to its
+// own name so it's still shown clearly.
+const READY_IN_PROGRESS_LABELS = {
+  'Ready For QA': 'Ready',
+  'In QA':        'In Progress',
+};
+function statusLabelFor(column) {
+  return READY_IN_PROGRESS_LABELS[column] || column;
+}
+
 const STORAGE_KEY = 'qaScraperTables';
 const SETTINGS_KEY = 'qaScraperSettings';
+const RULE_SETS_SYNC_KEY = 'qaScraperRuleSets'; // chrome.storage.sync — small, so it can follow the user across machines
 
 // ── State ──────────────────────────────────────────────────────
 
 let state = {
   tables:       [],   // [{id, name, items: [], pagesScraped, boardName, createdAt}]
   activeTableId: null,
-  view:         'new-table', // 'new-table' | 'main' | 'settings'
+  view:         'new-table', // 'new-table' | 'main' | 'settings' | 'rules'
   scraping:     false,
   settings: {
     sortOrder:  'id',
   },
+  ruleSets:         [],   // [{id, name, rules}]
+  activeRuleSetId:  null,
 };
+
+let ruleBuilderSnapshot = null; // deep clone of {ruleSets, activeRuleSetId} taken when the builder opens, restored on Cancel
+
+function getActiveRuleSet() {
+  return state.ruleSets.find(s => s.id === state.activeRuleSetId) || state.ruleSets[0];
+}
 
 // ── DOM refs ───────────────────────────────────────────────────
 
@@ -46,10 +66,23 @@ const DOM = {
     main:     $('view-main'),
     settings: $('view-settings'),
     addRow:   $('view-add-row'),
+    rules:    $('view-rules'),
   },
   header: {
     tableLabel: $('current-table-label'),
     btnSettings:$('btn-settings'),
+    btnRules:   $('btn-open-rules'),
+  },
+  rules: {
+    setSelect:    $('rule-set-select'),
+    btnNewSet:    $('btn-new-rule-set'),
+    btnRenameSet: $('btn-rename-rule-set'),
+    btnDeleteSet: $('btn-delete-rule-set'),
+    rows:         $('rule-rows'),
+    emptyHint:    $('rule-empty-hint'),
+    btnAdd:       $('btn-add-rule'),
+    btnApply:     $('btn-apply-rules'),
+    btnCancel:    $('btn-cancel-rules'),
   },
   newTable: {
     nameInput:  $('table-name-input'),
@@ -106,6 +139,31 @@ function saveState() {
   });
 }
 
+async function loadRuleSets() {
+  return new Promise(resolve => {
+    chrome.storage.sync.get([RULE_SETS_SYNC_KEY], result => {
+      const saved = result[RULE_SETS_SYNC_KEY];
+      if (saved && Array.isArray(saved.ruleSets) && saved.ruleSets.length) {
+        state.ruleSets        = saved.ruleSets;
+        state.activeRuleSetId = saved.activeRuleSetId || saved.ruleSets[0].id;
+        resolve();
+      } else {
+        // First run — seed with the default rule set and persist it.
+        state.ruleSets        = [JSON.parse(JSON.stringify(DEFAULT_RULE_SET))];
+        state.activeRuleSetId = DEFAULT_RULE_SET.id;
+        saveRuleSets();
+        resolve();
+      }
+    });
+  });
+}
+
+function saveRuleSets() {
+  chrome.storage.sync.set({
+    [RULE_SETS_SYNC_KEY]: { ruleSets: state.ruleSets, activeRuleSetId: state.activeRuleSetId },
+  });
+}
+
 // ── Table helpers ──────────────────────────────────────────────
 
 function getActiveTable() {
@@ -140,6 +198,11 @@ function mergeItems(existing, incoming) {
     }
   });
   return added;
+}
+
+// Rows in the active table that match the active rule set.
+function getVisibleItems(table) {
+  return table.items.filter(item => evaluateRuleSet(item, getActiveRuleSet()));
 }
 
 // Which assignee to show for a row, honoring the per-row selector.
@@ -190,15 +253,26 @@ function renderMain() {
     return;
   }
 
+  const visibleItems = getVisibleItems(table);
+
+  if (visibleItems.length === 0) {
+    DOM.main.tableWrapper.style.display = 'none';
+    DOM.main.chipsRow.style.display     = 'none';
+    setStatus('idle', `${table.items.length} item${table.items.length !== 1 ? 's' : ''} scraped — none match the active filter.`);
+    return;
+  }
+
   // Chips
-  renderChips(table.items);
+  renderChips(visibleItems);
 
   // Table
-  renderTable(table.items);
+  renderTable(visibleItems);
   DOM.main.tableWrapper.style.display = '';
-  DOM.main.tableCount.textContent     = `${table.items.length} item${table.items.length !== 1 ? 's' : ''}`;
+  DOM.main.tableCount.textContent = visibleItems.length === table.items.length
+    ? `${visibleItems.length} item${visibleItems.length !== 1 ? 's' : ''}`
+    : `${visibleItems.length} of ${table.items.length} items (filtered)`;
 
-  if (!state.scraping) setStatus('idle', `${table.items.length} items — scrape more pages or copy the table.`);
+  if (!state.scraping) setStatus('idle', `${visibleItems.length} items shown — scrape more pages or copy the table.`);
 }
 
 function renderChips(items) {
@@ -211,7 +285,7 @@ function renderChips(items) {
     chip.className = 'chip';
     chip.style.background = st.bg;
     chip.style.color       = st.color;
-    chip.textContent = `${col}: ${counts[col]}`;
+    chip.textContent = `${statusLabelFor(col)}: ${counts[col]}`;
     DOM.main.chipsRow.appendChild(chip);
   });
   DOM.main.chipsRow.style.display = '';
@@ -240,6 +314,9 @@ function renderTable(items) {
   DOM.main.resultsBody.innerHTML = sorted.map(item => {
     const st       = styleForColumn(item.column);
     const safeKey  = escHtml(item.rowKey || '');
+    const label    = statusLabelFor(item.column);
+    const subtext  = label !== item.column ? `<div class="status-subtext">${escHtml(item.column)}</div>` : '';
+
     return `
       <tr>
         <td class="col-delete">
@@ -250,16 +327,22 @@ function renderTable(items) {
         </td>
         <td class="col-title">${escHtml(item.title)}</td>
         <td class="col-person">
-          ${escHtml(computeAssignedTo(item))}
-          <select class="assignee-source-select" data-key="${safeKey}" title="Which assignee to display">
-            <option value="qaTask"${item.assigneeSource === 'qaTask' ? ' selected' : ''}${item.hasQaTask ? '' : ' disabled'}>QA Task</option>
-            <option value="parent"${item.assigneeSource === 'parent' ? ' selected' : ''}>Parent</option>
+          <div class="assignee-line${item.assigneeSource === 'qaTask' ? ' assignee-active' : ''}">
+            <span class="assignee-tag">QA</span>${escHtml(item.qaTaskAssignedTo || '—')}
+          </div>
+          <div class="assignee-line${item.assigneeSource === 'parent' ? ' assignee-active' : ''}">
+            <span class="assignee-tag">Parent</span>${escHtml(item.parentAssignedTo || '—')}
+          </div>
+          <select class="assignee-source-select" data-key="${safeKey}" title="Which assignee to use for this row">
+            <option value="qaTask"${item.assigneeSource === 'qaTask' ? ' selected' : ''}${item.hasQaTask ? '' : ' disabled'}>Use QA Task</option>
+            <option value="parent"${item.assigneeSource === 'parent' ? ' selected' : ''}>Use Parent</option>
           </select>
         </td>
         <td class="col-status">
           <span class="status-badge" style="background:${st.bg};color:${st.color}">
-            ${escHtml(item.column)}
+            ${escHtml(label)}
           </span>
+          ${subtext}
         </td>
         <td class="col-notes">${escHtml(item.notes || '')}</td>
       </tr>`;
@@ -414,7 +497,7 @@ function buildHtmlTable(items) {
   const rows = sorted.map(item => {
     const st = styleForColumn(item.column);
     const caseCell = `<a href="${item.url}" style="color:#0078d4;font-weight:600;text-decoration:none">#${item.id}</a>`;
-    const badge    = `<span style="display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;background:${st.bg};color:${st.color}">${escHtml(item.column)}</span>`;
+    const badge    = `<span style="display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;background:${st.bg};color:${st.color}">${escHtml(statusLabelFor(item.column))}</span>`;
     return `    <tr>
       <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;white-space:nowrap">${caseCell}</td>
       <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0">${escHtml(item.title)}</td>
@@ -435,7 +518,7 @@ function buildHtmlTable(items) {
       <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0;white-space:nowrap">Case #</th>
       <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Title</th>
       <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0;white-space:nowrap">Assigned To</th>
-      <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Column</th>
+      <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Status</th>
       <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Notes</th>
     </tr>
   </thead>
@@ -449,12 +532,12 @@ function buildPlainText(items) {
   const sorted = sortItems(items);
   const table = getActiveTable();
   const header = table ? `${table.name}\n${'─'.repeat(table.name.length)}\n` : '';
-  const cols = ['Case #', 'Title', 'Assigned To', 'Column', 'Notes'];
+  const cols = ['Case #', 'Title', 'Assigned To', 'Status', 'Notes'];
 
   // Calculate column widths
   const widths = cols.map((c, i) => {
     const vals = sorted.map(item => {
-      const row = [`#${item.id}`, item.title, computeAssignedTo(item), item.column, item.notes || ''];
+      const row = [`#${item.id}`, item.title, computeAssignedTo(item), statusLabelFor(item.column), item.notes || ''];
       return row[i] || '';
     });
     return Math.max(c.length, ...vals.map(v => v.length));
@@ -465,7 +548,7 @@ function buildPlainText(items) {
   const headerRow = cols.map((c, i) => pad(c, widths[i])).join('  ');
 
   const rows = sorted.map(item => {
-    const row = [`#${item.id}`, item.title, computeAssignedTo(item), item.column, item.notes || ''];
+    const row = [`#${item.id}`, item.title, computeAssignedTo(item), statusLabelFor(item.column), item.notes || ''];
     return row.map((v, i) => pad(v, widths[i])).join('  ');
   });
 
@@ -476,12 +559,13 @@ async function copyHtml() {
   const table = getActiveTable();
   if (!table || !table.items.length) return;
 
-  const html = buildHtmlTable(table.items);
+  const visibleItems = getVisibleItems(table);
+  const html = buildHtmlTable(visibleItems);
   try {
     await navigator.clipboard.write([
       new ClipboardItem({
         'text/html':  new Blob([html],            { type: 'text/html' }),
-        'text/plain': new Blob([buildPlainText(table.items)], { type: 'text/plain' }),
+        'text/plain': new Blob([buildPlainText(visibleItems)], { type: 'text/plain' }),
       }),
     ]);
     showToast('📋 Copied as rich-text table — paste into your email!');
@@ -495,7 +579,7 @@ async function copyHtml() {
 async function copyPlainText() {
   const table = getActiveTable();
   if (!table || !table.items.length) return;
-  await navigator.clipboard.writeText(buildPlainText(table.items));
+  await navigator.clipboard.writeText(buildPlainText(getVisibleItems(table)));
   showToast('📄 Copied plain text table.');
 }
 
@@ -750,6 +834,141 @@ function addManualRow() {
   renderMain();
 }
 
+// ── Rule builder ───────────────────────────────────────────────
+
+function findRule(id) {
+  return getActiveRuleSet().rules.find(r => r.id === id);
+}
+
+function ruleRowHtml(rule, idx) {
+  const fieldDef     = ruleFieldDef(rule.field);
+  const operators    = OPERATORS_BY_TYPE[fieldDef.type];
+  const isListOp     = LIST_OPERATORS.has(rule.operator);
+  const isEmptyOp    = rule.operator === 'is empty' || rule.operator === 'is not empty';
+  const valueDisplay = isListOp && Array.isArray(rule.value) ? rule.value.join(', ') : (rule.value ?? '');
+
+  const valueField = fieldDef.type === 'boolean'
+    ? `<select class="rule-value" data-id="${rule.id}">
+         <option value="true"${String(rule.value) === 'true' ? ' selected' : ''}>True</option>
+         <option value="false"${String(rule.value) === 'false' ? ' selected' : ''}>False</option>
+       </select>`
+    : `<input class="rule-value" data-id="${rule.id}" type="text" value="${escHtml(String(valueDisplay))}"
+         placeholder="${isListOp ? 'comma, separated, values' : 'value'}" ${isEmptyOp ? 'disabled' : ''} />`;
+
+  return `
+    <div class="rule-row" data-id="${rule.id}">
+      <select class="rule-joiner" data-id="${rule.id}" ${idx === 0 ? 'disabled' : ''}>
+        <option value="And"${rule.joiner === 'And' ? ' selected' : ''}>And</option>
+        <option value="Or"${rule.joiner === 'Or' ? ' selected' : ''}>Or</option>
+      </select>
+      <select class="rule-field" data-id="${rule.id}">
+        ${RULE_FIELDS.map(f => `<option value="${f.key}"${f.key === rule.field ? ' selected' : ''}>${escHtml(f.label)}</option>`).join('')}
+      </select>
+      <select class="rule-operator" data-id="${rule.id}">
+        ${operators.map(op => `<option value="${op}"${op === rule.operator ? ' selected' : ''}>${escHtml(op)}</option>`).join('')}
+      </select>
+      ${valueField}
+      <button class="btn-delete-rule" data-id="${rule.id}" title="Remove rule">✕</button>
+    </div>`;
+}
+
+function renderRuleSetSelect() {
+  DOM.rules.setSelect.innerHTML = state.ruleSets
+    .map(s => `<option value="${escHtml(s.id)}"${s.id === state.activeRuleSetId ? ' selected' : ''}>${escHtml(s.name)}</option>`)
+    .join('');
+  DOM.rules.btnDeleteSet.disabled = state.ruleSets.length <= 1;
+}
+
+function renderRuleBuilder() {
+  renderRuleSetSelect();
+  const rules = getActiveRuleSet().rules;
+  DOM.rules.rows.innerHTML = rules.map((rule, idx) => ruleRowHtml(rule, idx)).join('');
+  DOM.rules.emptyHint.style.display = rules.length ? 'none' : '';
+  wireRuleRowEvents();
+}
+
+function wireRuleRowEvents() {
+  DOM.rules.rows.querySelectorAll('.rule-joiner').forEach(el => {
+    el.addEventListener('change', () => { findRule(el.dataset.id).joiner = el.value; });
+  });
+
+  DOM.rules.rows.querySelectorAll('.rule-field').forEach(el => {
+    el.addEventListener('change', () => {
+      const rule = findRule(el.dataset.id);
+      rule.field = el.value;
+      const def  = ruleFieldDef(rule.field);
+      rule.operator = OPERATORS_BY_TYPE[def.type][0];
+      rule.value    = def.type === 'boolean' ? 'true' : '';
+      renderRuleBuilder();
+    });
+  });
+
+  DOM.rules.rows.querySelectorAll('.rule-operator').forEach(el => {
+    el.addEventListener('change', () => {
+      const rule = findRule(el.dataset.id);
+      rule.operator = el.value;
+      renderRuleBuilder();
+    });
+  });
+
+  DOM.rules.rows.querySelectorAll('.rule-value').forEach(el => {
+    const evt = el.tagName === 'SELECT' ? 'change' : 'input';
+    el.addEventListener(evt, () => { findRule(el.dataset.id).value = el.value; });
+  });
+
+  DOM.rules.rows.querySelectorAll('.btn-delete-rule').forEach(el => {
+    el.addEventListener('click', () => {
+      const activeSet = getActiveRuleSet();
+      activeSet.rules = activeSet.rules.filter(r => r.id !== el.dataset.id);
+      renderRuleBuilder();
+    });
+  });
+}
+
+function openRuleBuilder() {
+  ruleBuilderSnapshot = JSON.parse(JSON.stringify({ ruleSets: state.ruleSets, activeRuleSetId: state.activeRuleSetId }));
+  renderRuleBuilder();
+  showView('rules');
+}
+
+function closeRuleBuilder() {
+  if (getActiveTable()) renderMain();
+  else showView('newTable');
+}
+
+function newRuleSet() {
+  const name = prompt('Name this filter set:', '');
+  if (!name || !name.trim()) return;
+  const newSet = {
+    id:    `set-${Date.now()}`,
+    name:  name.trim(),
+    rules: [makeEmptyRule('And')],
+  };
+  state.ruleSets.push(newSet);
+  state.activeRuleSetId = newSet.id;
+  renderRuleBuilder();
+}
+
+function renameRuleSet() {
+  const activeSet = getActiveRuleSet();
+  const name = prompt('Rename filter set:', activeSet.name);
+  if (!name || !name.trim()) return;
+  activeSet.name = name.trim();
+  renderRuleSetSelect();
+}
+
+function deleteRuleSet() {
+  if (state.ruleSets.length <= 1) {
+    showToast('At least one filter set is required.');
+    return;
+  }
+  const activeSet = getActiveRuleSet();
+  if (!confirm(`Delete the "${activeSet.name}" filter set? This cannot be undone.`)) return;
+  state.ruleSets = state.ruleSets.filter(s => s.id !== activeSet.id);
+  state.activeRuleSetId = state.ruleSets[0].id;
+  renderRuleBuilder();
+}
+
 // ── Event wiring ────────────────────────────────────────────────
 
 function wireEvents() {
@@ -838,6 +1057,30 @@ function wireEvents() {
     showView('settings');
   });
 
+  // Rule builder
+  DOM.header.btnRules.addEventListener('click', openRuleBuilder);
+  DOM.rules.setSelect.addEventListener('change', () => {
+    state.activeRuleSetId = DOM.rules.setSelect.value;
+    renderRuleBuilder();
+  });
+  DOM.rules.btnNewSet.addEventListener('click', newRuleSet);
+  DOM.rules.btnRenameSet.addEventListener('click', renameRuleSet);
+  DOM.rules.btnDeleteSet.addEventListener('click', deleteRuleSet);
+  DOM.rules.btnAdd.addEventListener('click', () => {
+    getActiveRuleSet().rules.push(makeEmptyRule('And'));
+    renderRuleBuilder();
+  });
+  DOM.rules.btnApply.addEventListener('click', () => {
+    saveRuleSets();
+    showToast('✓ Filter applied.');
+    closeRuleBuilder();
+  });
+  DOM.rules.btnCancel.addEventListener('click', () => {
+    state.ruleSets        = ruleBuilderSnapshot.ruleSets;
+    state.activeRuleSetId = ruleBuilderSnapshot.activeRuleSetId;
+    closeRuleBuilder();
+  });
+
   DOM.settings.btnSave.addEventListener('click', () => {
     state.settings.sortOrder  = DOM.settings.sortOrderSelect.value;
     saveState();
@@ -855,7 +1098,7 @@ function wireEvents() {
 // ── Init ────────────────────────────────────────────────────────
 
 (async () => {
-  await loadState();
+  await Promise.all([loadState(), loadRuleSets()]);
   wireEvents();
 
   if (getActiveTable()) {

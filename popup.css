@@ -187,9 +187,9 @@ body {
 .btn-delete:hover { color: var(--red); background: var(--red-bg); }
 
 .col-case   { width: 70px; }
-.col-title  { min-width: 160px; max-width: 200px; word-break: break-word; }
-.col-person { width: 110px; word-break: break-word; }
-.col-status { width: 130px; }
+.col-title  { min-width: 150px; max-width: 190px; word-break: break-word; }
+.col-person { width: 140px; word-break: break-word; }
+.col-status { width: 120px; }
 .col-notes  { min-width: 90px; word-break: break-word; }
 
 .case-link {
@@ -199,6 +199,39 @@ body {
 }
 .case-link:hover { text-decoration: underline; }
 
+/* ── Assignee cell (QA Task vs Parent) ──────────────────────────── */
+.assignee-line {
+  font-size: 11.5px;
+  color: var(--gray-500);
+  line-height: 1.5;
+}
+.assignee-line.assignee-active {
+  color: var(--gray-900);
+  font-weight: 600;
+}
+.assignee-tag {
+  display: inline-block;
+  min-width: 34px;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .3px;
+  color: var(--gray-500);
+  margin-right: 4px;
+}
+.assignee-source-select {
+  margin-top: 3px;
+  width: 100%;
+  font-size: 10.5px;
+  padding: 2px 4px;
+  border: 1px solid var(--gray-200);
+  border-radius: 4px;
+  font-family: var(--font);
+  color: var(--gray-700);
+  background: #fff;
+}
+.assignee-source-select:focus { outline: none; border-color: var(--blue); }
+
 /* Status badge inside table */
 .status-badge {
   display: inline-block;
@@ -207,6 +240,11 @@ body {
   font-size: 10.5px;
   font-weight: 600;
   white-space: nowrap;
+}
+.status-subtext {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--gray-500);
 }
 
 /* ── Bottom actions ──────────────────────────────────────────── */
@@ -420,24 +458,50 @@ body {
 
 .hint-text { font-size: 12px; color: var(--gray-500); padding: 8px 0; }
 
-/* ── Needs Review row ────────────────────────────────────────── */
-tr.row-needs-review td { background: #fffbea; }
-tr.row-needs-review:hover td { background: #fff6d0; }
+/* ── Rule builder ────────────────────────────────────────────── */
+.rule-rows { display: flex; flex-direction: column; gap: 8px; }
 
-.review-badge {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 1px 6px;
-  border-radius: 10px;
-  font-size: 10px;
-  font-weight: 700;
-  background: #fff3cd;
-  color: #856404;
-  border: 1px solid #f2c94c;
-  cursor: help;
-  vertical-align: middle;
-  white-space: nowrap;
+.rule-row {
+  display: grid;
+  grid-template-columns: 60px 130px 140px 1fr 26px;
+  gap: 6px;
+  align-items: center;
 }
+.rule-row select,
+.rule-row input {
+  font-size: 12px;
+  padding: 5px 7px;
+  border: 1px solid var(--gray-200);
+  border-radius: 4px;
+  font-family: var(--font);
+  color: var(--gray-900);
+  background: #fff;
+  width: 100%;
+}
+.rule-row select:focus,
+.rule-row input:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+.rule-row select:disabled,
+.rule-row input:disabled {
+  background: var(--gray-100);
+  color: var(--gray-500);
+}
+
+.btn-delete-rule {
+  background: none;
+  border: none;
+  color: var(--gray-200);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px;
+  border-radius: 3px;
+  line-height: 1;
+  justify-self: center;
+  transition: color .1s, background .1s;
+}
+.btn-delete-rule:hover { color: var(--red); background: var(--red-bg); }
 
 /* ── Spinner animation ───────────────────────────────────────── */
 @keyframes spin { to { transform: rotate(360deg); } }
