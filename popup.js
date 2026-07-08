@@ -34,6 +34,7 @@ function statusLabelFor(column) {
 
 const STORAGE_KEY = 'qaScraperTables';
 const SETTINGS_KEY = 'qaScraperSettings';
+const RULE_SETS_SYNC_KEY = 'qaScraperRuleSets'; // chrome.storage.sync — small, so it can follow the user across machines
 
 // ── State ──────────────────────────────────────────────────────
 
@@ -45,10 +46,15 @@ let state = {
   settings: {
     sortOrder:  'id',
   },
-  activeRuleSet: JSON.parse(JSON.stringify(DEFAULT_RULE_SET)),
+  ruleSets:         [],   // [{id, name, rules}]
+  activeRuleSetId:  null,
 };
 
-let ruleBuilderSnapshot = null; // deep clone taken when the rule builder opens, restored on Cancel
+let ruleBuilderSnapshot = null; // deep clone of {ruleSets, activeRuleSetId} taken when the builder opens, restored on Cancel
+
+function getActiveRuleSet() {
+  return state.ruleSets.find(s => s.id === state.activeRuleSetId) || state.ruleSets[0];
+}
 
 // ── DOM refs ───────────────────────────────────────────────────
 
@@ -68,11 +74,15 @@ const DOM = {
     btnRules:   $('btn-open-rules'),
   },
   rules: {
-    rows:       $('rule-rows'),
-    emptyHint:  $('rule-empty-hint'),
-    btnAdd:     $('btn-add-rule'),
-    btnApply:   $('btn-apply-rules'),
-    btnCancel:  $('btn-cancel-rules'),
+    setSelect:    $('rule-set-select'),
+    btnNewSet:    $('btn-new-rule-set'),
+    btnRenameSet: $('btn-rename-rule-set'),
+    btnDeleteSet: $('btn-delete-rule-set'),
+    rows:         $('rule-rows'),
+    emptyHint:    $('rule-empty-hint'),
+    btnAdd:       $('btn-add-rule'),
+    btnApply:     $('btn-apply-rules'),
+    btnCancel:    $('btn-cancel-rules'),
   },
   newTable: {
     nameInput:  $('table-name-input'),
@@ -129,6 +139,31 @@ function saveState() {
   });
 }
 
+async function loadRuleSets() {
+  return new Promise(resolve => {
+    chrome.storage.sync.get([RULE_SETS_SYNC_KEY], result => {
+      const saved = result[RULE_SETS_SYNC_KEY];
+      if (saved && Array.isArray(saved.ruleSets) && saved.ruleSets.length) {
+        state.ruleSets        = saved.ruleSets;
+        state.activeRuleSetId = saved.activeRuleSetId || saved.ruleSets[0].id;
+        resolve();
+      } else {
+        // First run — seed with the default rule set and persist it.
+        state.ruleSets        = [JSON.parse(JSON.stringify(DEFAULT_RULE_SET))];
+        state.activeRuleSetId = DEFAULT_RULE_SET.id;
+        saveRuleSets();
+        resolve();
+      }
+    });
+  });
+}
+
+function saveRuleSets() {
+  chrome.storage.sync.set({
+    [RULE_SETS_SYNC_KEY]: { ruleSets: state.ruleSets, activeRuleSetId: state.activeRuleSetId },
+  });
+}
+
 // ── Table helpers ──────────────────────────────────────────────
 
 function getActiveTable() {
@@ -167,7 +202,7 @@ function mergeItems(existing, incoming) {
 
 // Rows in the active table that match the active rule set.
 function getVisibleItems(table) {
-  return table.items.filter(item => evaluateRuleSet(item, state.activeRuleSet));
+  return table.items.filter(item => evaluateRuleSet(item, getActiveRuleSet()));
 }
 
 // Which assignee to show for a row, honoring the per-row selector.
@@ -802,7 +837,7 @@ function addManualRow() {
 // ── Rule builder ───────────────────────────────────────────────
 
 function findRule(id) {
-  return state.activeRuleSet.rules.find(r => r.id === id);
+  return getActiveRuleSet().rules.find(r => r.id === id);
 }
 
 function ruleRowHtml(rule, idx) {
@@ -837,8 +872,16 @@ function ruleRowHtml(rule, idx) {
     </div>`;
 }
 
+function renderRuleSetSelect() {
+  DOM.rules.setSelect.innerHTML = state.ruleSets
+    .map(s => `<option value="${escHtml(s.id)}"${s.id === state.activeRuleSetId ? ' selected' : ''}>${escHtml(s.name)}</option>`)
+    .join('');
+  DOM.rules.btnDeleteSet.disabled = state.ruleSets.length <= 1;
+}
+
 function renderRuleBuilder() {
-  const rules = state.activeRuleSet.rules;
+  renderRuleSetSelect();
+  const rules = getActiveRuleSet().rules;
   DOM.rules.rows.innerHTML = rules.map((rule, idx) => ruleRowHtml(rule, idx)).join('');
   DOM.rules.emptyHint.style.display = rules.length ? 'none' : '';
   wireRuleRowEvents();
@@ -875,14 +918,15 @@ function wireRuleRowEvents() {
 
   DOM.rules.rows.querySelectorAll('.btn-delete-rule').forEach(el => {
     el.addEventListener('click', () => {
-      state.activeRuleSet.rules = state.activeRuleSet.rules.filter(r => r.id !== el.dataset.id);
+      const activeSet = getActiveRuleSet();
+      activeSet.rules = activeSet.rules.filter(r => r.id !== el.dataset.id);
       renderRuleBuilder();
     });
   });
 }
 
 function openRuleBuilder() {
-  ruleBuilderSnapshot = JSON.parse(JSON.stringify(state.activeRuleSet));
+  ruleBuilderSnapshot = JSON.parse(JSON.stringify({ ruleSets: state.ruleSets, activeRuleSetId: state.activeRuleSetId }));
   renderRuleBuilder();
   showView('rules');
 }
@@ -890,6 +934,39 @@ function openRuleBuilder() {
 function closeRuleBuilder() {
   if (getActiveTable()) renderMain();
   else showView('newTable');
+}
+
+function newRuleSet() {
+  const name = prompt('Name this filter set:', '');
+  if (!name || !name.trim()) return;
+  const newSet = {
+    id:    `set-${Date.now()}`,
+    name:  name.trim(),
+    rules: [makeEmptyRule('And')],
+  };
+  state.ruleSets.push(newSet);
+  state.activeRuleSetId = newSet.id;
+  renderRuleBuilder();
+}
+
+function renameRuleSet() {
+  const activeSet = getActiveRuleSet();
+  const name = prompt('Rename filter set:', activeSet.name);
+  if (!name || !name.trim()) return;
+  activeSet.name = name.trim();
+  renderRuleSetSelect();
+}
+
+function deleteRuleSet() {
+  if (state.ruleSets.length <= 1) {
+    showToast('At least one filter set is required.');
+    return;
+  }
+  const activeSet = getActiveRuleSet();
+  if (!confirm(`Delete the "${activeSet.name}" filter set? This cannot be undone.`)) return;
+  state.ruleSets = state.ruleSets.filter(s => s.id !== activeSet.id);
+  state.activeRuleSetId = state.ruleSets[0].id;
+  renderRuleBuilder();
 }
 
 // ── Event wiring ────────────────────────────────────────────────
@@ -982,16 +1059,25 @@ function wireEvents() {
 
   // Rule builder
   DOM.header.btnRules.addEventListener('click', openRuleBuilder);
+  DOM.rules.setSelect.addEventListener('change', () => {
+    state.activeRuleSetId = DOM.rules.setSelect.value;
+    renderRuleBuilder();
+  });
+  DOM.rules.btnNewSet.addEventListener('click', newRuleSet);
+  DOM.rules.btnRenameSet.addEventListener('click', renameRuleSet);
+  DOM.rules.btnDeleteSet.addEventListener('click', deleteRuleSet);
   DOM.rules.btnAdd.addEventListener('click', () => {
-    state.activeRuleSet.rules.push(makeEmptyRule('And'));
+    getActiveRuleSet().rules.push(makeEmptyRule('And'));
     renderRuleBuilder();
   });
   DOM.rules.btnApply.addEventListener('click', () => {
+    saveRuleSets();
     showToast('✓ Filter applied.');
     closeRuleBuilder();
   });
   DOM.rules.btnCancel.addEventListener('click', () => {
-    state.activeRuleSet = ruleBuilderSnapshot;
+    state.ruleSets        = ruleBuilderSnapshot.ruleSets;
+    state.activeRuleSetId = ruleBuilderSnapshot.activeRuleSetId;
     closeRuleBuilder();
   });
 
@@ -1012,7 +1098,7 @@ function wireEvents() {
 // ── Init ────────────────────────────────────────────────────────
 
 (async () => {
-  await loadState();
+  await Promise.all([loadState(), loadRuleSets()]);
   wireEvents();
 
   if (getActiveTable()) {

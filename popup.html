@@ -139,7 +139,15 @@
         in the table.
       </p>
 
-      <div id="rule-rows" class="rule-rows"></div>
+      <label class="field-label" for="rule-set-select">Filter set</label>
+      <div class="row gap-6 mt-12" style="align-items:stretch">
+        <select id="rule-set-select" class="text-input flex-1"></select>
+        <button class="btn btn-outline btn-sm" id="btn-new-rule-set" title="Save as a new filter set">＋ New</button>
+        <button class="btn btn-outline btn-sm" id="btn-rename-rule-set" title="Rename this filter set">✏</button>
+        <button class="btn btn-outline btn-sm" id="btn-delete-rule-set" title="Delete this filter set">🗑</button>
+      </div>
+
+      <div id="rule-rows" class="rule-rows mt-16"></div>
       <div id="rule-empty-hint" class="hint-text" style="display:none">
         No rules — every scraped card will be shown.
       </div>
