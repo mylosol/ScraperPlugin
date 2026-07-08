@@ -29,12 +29,15 @@ const SETTINGS_KEY = 'qaScraperSettings';
 let state = {
   tables:       [],   // [{id, name, items: [], pagesScraped, boardName, createdAt}]
   activeTableId: null,
-  view:         'new-table', // 'new-table' | 'main' | 'settings'
+  view:         'new-table', // 'new-table' | 'main' | 'settings' | 'rules'
   scraping:     false,
   settings: {
     sortOrder:  'id',
   },
+  activeRuleSet: JSON.parse(JSON.stringify(DEFAULT_RULE_SET)),
 };
+
+let ruleBuilderSnapshot = null; // deep clone taken when the rule builder opens, restored on Cancel
 
 // ── DOM refs ───────────────────────────────────────────────────
 
@@ -46,10 +49,19 @@ const DOM = {
     main:     $('view-main'),
     settings: $('view-settings'),
     addRow:   $('view-add-row'),
+    rules:    $('view-rules'),
   },
   header: {
     tableLabel: $('current-table-label'),
     btnSettings:$('btn-settings'),
+    btnRules:   $('btn-open-rules'),
+  },
+  rules: {
+    rows:       $('rule-rows'),
+    emptyHint:  $('rule-empty-hint'),
+    btnAdd:     $('btn-add-rule'),
+    btnApply:   $('btn-apply-rules'),
+    btnCancel:  $('btn-cancel-rules'),
   },
   newTable: {
     nameInput:  $('table-name-input'),
@@ -143,10 +155,8 @@ function mergeItems(existing, incoming) {
 }
 
 // Rows in the active table that match the active rule set.
-// The default rule set is baked in for now — the rule builder UI
-// (which lets it be edited/switched) lands in a follow-up PR.
 function getVisibleItems(table) {
-  return table.items.filter(item => evaluateRuleSet(item, DEFAULT_RULE_SET));
+  return table.items.filter(item => evaluateRuleSet(item, state.activeRuleSet));
 }
 
 // Which assignee to show for a row, honoring the per-row selector.
@@ -769,6 +779,99 @@ function addManualRow() {
   renderMain();
 }
 
+// ── Rule builder ───────────────────────────────────────────────
+
+function findRule(id) {
+  return state.activeRuleSet.rules.find(r => r.id === id);
+}
+
+function ruleRowHtml(rule, idx) {
+  const fieldDef     = ruleFieldDef(rule.field);
+  const operators    = OPERATORS_BY_TYPE[fieldDef.type];
+  const isListOp     = LIST_OPERATORS.has(rule.operator);
+  const isEmptyOp    = rule.operator === 'is empty' || rule.operator === 'is not empty';
+  const valueDisplay = isListOp && Array.isArray(rule.value) ? rule.value.join(', ') : (rule.value ?? '');
+
+  const valueField = fieldDef.type === 'boolean'
+    ? `<select class="rule-value" data-id="${rule.id}">
+         <option value="true"${String(rule.value) === 'true' ? ' selected' : ''}>True</option>
+         <option value="false"${String(rule.value) === 'false' ? ' selected' : ''}>False</option>
+       </select>`
+    : `<input class="rule-value" data-id="${rule.id}" type="text" value="${escHtml(String(valueDisplay))}"
+         placeholder="${isListOp ? 'comma, separated, values' : 'value'}" ${isEmptyOp ? 'disabled' : ''} />`;
+
+  return `
+    <div class="rule-row" data-id="${rule.id}">
+      <select class="rule-joiner" data-id="${rule.id}" ${idx === 0 ? 'disabled' : ''}>
+        <option value="And"${rule.joiner === 'And' ? ' selected' : ''}>And</option>
+        <option value="Or"${rule.joiner === 'Or' ? ' selected' : ''}>Or</option>
+      </select>
+      <select class="rule-field" data-id="${rule.id}">
+        ${RULE_FIELDS.map(f => `<option value="${f.key}"${f.key === rule.field ? ' selected' : ''}>${escHtml(f.label)}</option>`).join('')}
+      </select>
+      <select class="rule-operator" data-id="${rule.id}">
+        ${operators.map(op => `<option value="${op}"${op === rule.operator ? ' selected' : ''}>${escHtml(op)}</option>`).join('')}
+      </select>
+      ${valueField}
+      <button class="btn-delete-rule" data-id="${rule.id}" title="Remove rule">✕</button>
+    </div>`;
+}
+
+function renderRuleBuilder() {
+  const rules = state.activeRuleSet.rules;
+  DOM.rules.rows.innerHTML = rules.map((rule, idx) => ruleRowHtml(rule, idx)).join('');
+  DOM.rules.emptyHint.style.display = rules.length ? 'none' : '';
+  wireRuleRowEvents();
+}
+
+function wireRuleRowEvents() {
+  DOM.rules.rows.querySelectorAll('.rule-joiner').forEach(el => {
+    el.addEventListener('change', () => { findRule(el.dataset.id).joiner = el.value; });
+  });
+
+  DOM.rules.rows.querySelectorAll('.rule-field').forEach(el => {
+    el.addEventListener('change', () => {
+      const rule = findRule(el.dataset.id);
+      rule.field = el.value;
+      const def  = ruleFieldDef(rule.field);
+      rule.operator = OPERATORS_BY_TYPE[def.type][0];
+      rule.value    = def.type === 'boolean' ? 'true' : '';
+      renderRuleBuilder();
+    });
+  });
+
+  DOM.rules.rows.querySelectorAll('.rule-operator').forEach(el => {
+    el.addEventListener('change', () => {
+      const rule = findRule(el.dataset.id);
+      rule.operator = el.value;
+      renderRuleBuilder();
+    });
+  });
+
+  DOM.rules.rows.querySelectorAll('.rule-value').forEach(el => {
+    const evt = el.tagName === 'SELECT' ? 'change' : 'input';
+    el.addEventListener(evt, () => { findRule(el.dataset.id).value = el.value; });
+  });
+
+  DOM.rules.rows.querySelectorAll('.btn-delete-rule').forEach(el => {
+    el.addEventListener('click', () => {
+      state.activeRuleSet.rules = state.activeRuleSet.rules.filter(r => r.id !== el.dataset.id);
+      renderRuleBuilder();
+    });
+  });
+}
+
+function openRuleBuilder() {
+  ruleBuilderSnapshot = JSON.parse(JSON.stringify(state.activeRuleSet));
+  renderRuleBuilder();
+  showView('rules');
+}
+
+function closeRuleBuilder() {
+  if (getActiveTable()) renderMain();
+  else showView('newTable');
+}
+
 // ── Event wiring ────────────────────────────────────────────────
 
 function wireEvents() {
@@ -855,6 +958,21 @@ function wireEvents() {
   DOM.header.btnSettings.addEventListener('click', () => {
     DOM.settings.sortOrderSelect.value  = state.settings.sortOrder;
     showView('settings');
+  });
+
+  // Rule builder
+  DOM.header.btnRules.addEventListener('click', openRuleBuilder);
+  DOM.rules.btnAdd.addEventListener('click', () => {
+    state.activeRuleSet.rules.push(makeEmptyRule('And'));
+    renderRuleBuilder();
+  });
+  DOM.rules.btnApply.addEventListener('click', () => {
+    showToast('✓ Filter applied.');
+    closeRuleBuilder();
+  });
+  DOM.rules.btnCancel.addEventListener('click', () => {
+    state.activeRuleSet = ruleBuilderSnapshot;
+    closeRuleBuilder();
   });
 
   DOM.settings.btnSave.addEventListener('click', () => {
