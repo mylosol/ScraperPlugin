@@ -142,6 +142,13 @@ function mergeItems(existing, incoming) {
   return added;
 }
 
+// Rows in the active table that match the active rule set.
+// The default rule set is baked in for now — the rule builder UI
+// (which lets it be edited/switched) lands in a follow-up PR.
+function getVisibleItems(table) {
+  return table.items.filter(item => evaluateRuleSet(item, DEFAULT_RULE_SET));
+}
+
 // Which assignee to show for a row, honoring the per-row selector.
 function computeAssignedTo(item) {
   if (item.assigneeSource === 'qaTask') return item.qaTaskAssignedTo || item.parentAssignedTo || 'Unassigned';
@@ -190,15 +197,26 @@ function renderMain() {
     return;
   }
 
+  const visibleItems = getVisibleItems(table);
+
+  if (visibleItems.length === 0) {
+    DOM.main.tableWrapper.style.display = 'none';
+    DOM.main.chipsRow.style.display     = 'none';
+    setStatus('idle', `${table.items.length} item${table.items.length !== 1 ? 's' : ''} scraped — none match the active filter.`);
+    return;
+  }
+
   // Chips
-  renderChips(table.items);
+  renderChips(visibleItems);
 
   // Table
-  renderTable(table.items);
+  renderTable(visibleItems);
   DOM.main.tableWrapper.style.display = '';
-  DOM.main.tableCount.textContent     = `${table.items.length} item${table.items.length !== 1 ? 's' : ''}`;
+  DOM.main.tableCount.textContent = visibleItems.length === table.items.length
+    ? `${visibleItems.length} item${visibleItems.length !== 1 ? 's' : ''}`
+    : `${visibleItems.length} of ${table.items.length} items (filtered)`;
 
-  if (!state.scraping) setStatus('idle', `${table.items.length} items — scrape more pages or copy the table.`);
+  if (!state.scraping) setStatus('idle', `${visibleItems.length} items shown — scrape more pages or copy the table.`);
 }
 
 function renderChips(items) {
@@ -476,12 +494,13 @@ async function copyHtml() {
   const table = getActiveTable();
   if (!table || !table.items.length) return;
 
-  const html = buildHtmlTable(table.items);
+  const visibleItems = getVisibleItems(table);
+  const html = buildHtmlTable(visibleItems);
   try {
     await navigator.clipboard.write([
       new ClipboardItem({
         'text/html':  new Blob([html],            { type: 'text/html' }),
-        'text/plain': new Blob([buildPlainText(table.items)], { type: 'text/plain' }),
+        'text/plain': new Blob([buildPlainText(visibleItems)], { type: 'text/plain' }),
       }),
     ]);
     showToast('📋 Copied as rich-text table — paste into your email!');
@@ -495,7 +514,7 @@ async function copyHtml() {
 async function copyPlainText() {
   const table = getActiveTable();
   if (!table || !table.items.length) return;
-  await navigator.clipboard.writeText(buildPlainText(table.items));
+  await navigator.clipboard.writeText(buildPlainText(getVisibleItems(table)));
   showToast('📄 Copied plain text table.');
 }
 
