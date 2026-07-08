@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QA Update Scraper",
-  "version": "10.1.1",
-  "description": "Scrapes Azure DevOps sprint data to generate QA Update email tables.",
+  "version": "11.0.0",
+  "description": "Scrapes Azure DevOps Kanban board data to generate QA Update email tables.",
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
