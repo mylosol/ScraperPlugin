@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QA Update Scraper</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+
+  <!-- ═══ HEADER ═══════════════════════════════════════════════ -->
+  <header class="header">
+    <div class="header-left">
+      <svg class="logo" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+        <rect width="32" height="32" rx="6" fill="#0078d4"/>
+        <text x="16" y="22" text-anchor="middle" font-size="16" font-weight="700"
+              font-family="Segoe UI, sans-serif" fill="#fff">QA</text>
+      </svg>
+      <div>
+        <div class="app-title">QA Update Scraper</div>
+        <div class="app-subtitle" id="current-table-label">No active table</div>
+      </div>
+    </div>
+    <button class="btn btn-icon" id="btn-settings" title="Settings">⚙</button>
+  </header>
+
+  <!-- ═══ VIEWS ════════════════════════════════════════════════ -->
+
+  <!-- ── New Table Dialog ──────────────────────────────────── -->
+  <section id="view-new-table" class="view">
+    <div class="card">
+      <h2 class="card-title">Start a New Table</h2>
+      <p class="card-hint">Give this table a name, e.g. "Cases pushed to feature branch"</p>
+      <label class="field-label" for="table-name-input">Table name</label>
+      <input id="table-name-input" class="text-input" type="text"
+             placeholder="Cases pushed to feature branch" />
+      <div class="row gap-8 mt-12">
+        <button class="btn btn-primary flex-1" id="btn-create-table">Create Table</button>
+        <button class="btn btn-ghost flex-1" id="btn-cancel-create" style="display:none">Cancel</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Main Scrape View ───────────────────────────────────── -->
+  <section id="view-main" class="view" style="display:none">
+
+    <!-- Sprint info strip -->
+    <div class="sprint-strip" id="sprint-strip" style="display:none">
+      <span class="sprint-label">Sprint:</span>
+      <span id="sprint-name-display"></span>
+      <span class="sep">·</span>
+      <span id="pages-scraped-display"></span> page(s) scraped
+    </div>
+
+    <!-- Status bar -->
+    <div id="status-bar" class="status-bar status-idle">
+      <span id="status-icon">●</span>
+      <span id="status-text">Ready — navigate to a sprint board and click Scrape.</span>
+    </div>
+
+    <!-- Action row -->
+    <div class="action-row">
+      <button class="btn btn-primary" id="btn-scrape">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm.93 11.4-.6.58-4.12-4.12 4.12-4.13.6.6-3.52 3.53 3.52 3.54z"/>
+        </svg>
+        Scrape This Page
+      </button>
+      <button class="btn btn-ghost" id="btn-undo-page" title="Remove last page's data" style="display:none">↩ Undo Last</button>
+    </div>
+
+    <!-- Results summary chips -->
+    <div id="status-chips" class="chips-row" style="display:none"></div>
+
+    <!-- Table area -->
+    <div id="table-wrapper" style="display:none">
+      <div class="table-header-row">
+        <span class="table-count" id="table-count"></span>
+        <div class="row gap-6">
+          <button class="btn btn-sm btn-outline" id="btn-copy-html">📋 Copy for Email</button>
+          <button class="btn btn-sm btn-outline" id="btn-copy-text">📄 Copy Plain Text</button>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table id="results-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>Case #</th>
+              <th>Title</th>
+              <th>Assigned To</th>
+              <th>Status</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody id="results-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Bottom actions -->
+    <div class="bottom-actions">
+      <button class="btn btn-success" id="btn-new-table">＋ New Table</button>
+      <button class="btn btn-primary" id="btn-add-row">＋ Add Row</button>
+      <button class="btn btn-danger-outline" id="btn-clear-table">🗑 Clear Table</button>
+    </div>
+  </section>
+
+  <!-- ── Settings View ──────────────────────────────────────── -->
+  <section id="view-settings" class="view" style="display:none">
+    <div class="card">
+      <h2 class="card-title">Settings</h2>
+
+      <label class="field-label" for="build-field-input">
+        "Integrated in Build" field name
+        <span class="field-hint">Azure DevOps internal field name</span>
+      </label>
+      <input id="build-field-input" class="text-input" type="text"
+             placeholder="Microsoft.VSTS.Build.IntegrationBuild" />
+
+      <label class="field-label mt-12" for="sort-order-select">
+        Status sort order
+      </label>
+      <select id="sort-order-select" class="text-input">
+        <option value="priority">By priority (QA in progress first)</option>
+        <option value="id">By Case # (ascending)</option>
+      </select>
+
+      <div class="row gap-8 mt-16">
+        <button class="btn btn-primary flex-1" id="btn-save-settings">Save Settings</button>
+        <button class="btn btn-ghost flex-1" id="btn-close-settings">Cancel</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Add Row View ───────────────────────────────────────── -->
+  <section id="view-add-row" class="view" style="display:none">
+
+    <!-- Tab bar -->
+    <div class="tab-bar">
+      <button class="tab-btn tab-active" id="tab-lookup">🔍 ADO Lookup</button>
+      <button class="tab-btn" id="tab-manual">✏️ Manual Entry</button>
+    </div>
+
+    <!-- ADO Lookup tab -->
+    <div id="pane-lookup">
+      <div class="add-row-field">
+        <label class="field-label" for="lookup-input">Case # or ADO URL</label>
+        <div class="row gap-8">
+          <input id="lookup-input" class="text-input" type="text" placeholder="e.g. 172122 or https://dev.azure.com/…" />
+          <button class="btn btn-primary" id="btn-lookup">Look up</button>
+        </div>
+      </div>
+
+      <div id="lookup-status" class="status-bar status-idle" style="display:none">
+        <span id="lookup-status-icon">●</span>
+        <span id="lookup-status-text"></span>
+      </div>
+
+      <!-- Case result panel -->
+      <div id="lookup-result" style="display:none">
+        <div class="lookup-case-header">
+          <a id="lookup-case-link" class="case-link" href="#" target="_blank"></a>
+          <span id="lookup-case-title" class="lookup-case-title"></span>
+        </div>
+
+        <p class="field-label mt-12" style="margin-bottom:6px">Select tasks to add as rows:</p>
+        <div id="lookup-task-list" class="task-list"></div>
+
+        <div id="lookup-no-tasks" class="hint-text" style="display:none">
+          No child tasks found on this work item.
+        </div>
+
+        <div class="row gap-8 mt-12">
+          <button class="btn btn-success flex-1" id="btn-add-selected">＋ Add Selected Rows</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Manual Entry tab -->
+    <div id="pane-manual" style="display:none">
+      <div class="add-row-field">
+        <label class="field-label" for="manual-case">Case #</label>
+        <input id="manual-case" class="text-input" type="text" placeholder="e.g. 172122" />
+      </div>
+      <div class="add-row-field">
+        <label class="field-label" for="manual-title">Title</label>
+        <input id="manual-title" class="text-input" type="text" placeholder="Work item title" />
+      </div>
+      <div class="add-row-field">
+        <label class="field-label" for="manual-assigned">Assigned To</label>
+        <input id="manual-assigned" class="text-input" type="text" placeholder="Person's name" />
+      </div>
+      <div class="add-row-field">
+        <label class="field-label" for="manual-status">Status</label>
+        <select id="manual-status" class="text-input">
+          <option>QA Test in progress</option>
+          <option>Ready</option>
+          <option>Pending Passing Build</option>
+          <option>Blocked</option>
+          <option>Dev Test in progress</option>
+          <option>Pending Dev Test</option>
+        </select>
+      </div>
+      <div class="add-row-field">
+        <label class="field-label" for="manual-notes">Notes</label>
+        <input id="manual-notes" class="text-input" type="text" placeholder="Optional notes" />
+      </div>
+      <div class="row gap-8 mt-12">
+        <button class="btn btn-success flex-1" id="btn-add-manual">＋ Add Row</button>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="bottom-actions" style="border-top:1px solid var(--gray-100);margin-top:12px;padding-top:10px">
+      <button class="btn btn-ghost" id="btn-add-row-back">← Back</button>
+    </div>
+  </section>
+
+  <!-- ═══ TOAST ════════════════════════════════════════════════ -->
+  <div id="toast" class="toast" aria-live="polite"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

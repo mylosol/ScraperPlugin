@@ -1,0 +1,867 @@
+// ============================================================
+// QA Update Scraper — popup.js
+// ============================================================
+
+// ── Constants ─────────────────────────────────────────────────
+
+const STATUS_STYLE = {
+  'QA Test in progress':   { bg: '#cce5ff', color: '#004085', chipBg: '#cce5ff', chipColor: '#004085' },
+  'Ready':                 { bg: '#d4edda', color: '#155724', chipBg: '#d4edda', chipColor: '#155724' },
+  'Pending Passing Build': { bg: '#fde8c8', color: '#7a3e00', chipBg: '#fde8c8', chipColor: '#7a3e00' },
+  'Blocked':               { bg: '#f8d7da', color: '#721c24', chipBg: '#f8d7da', chipColor: '#721c24' },
+  'Dev Test in progress':  { bg: '#e2d9f3', color: '#5a3489', chipBg: '#e2d9f3', chipColor: '#5a3489' },
+  'Pending Dev Test':      { bg: '#fff3cd', color: '#856404', chipBg: '#fff3cd', chipColor: '#856404' },
+};
+
+const DEFAULT_BUILD_FIELD = 'Microsoft.VSTS.Build.IntegrationBuild';
+const STORAGE_KEY = 'qaScraperTables';
+const SETTINGS_KEY = 'qaScraperSettings';
+
+// ── State ──────────────────────────────────────────────────────
+
+let state = {
+  tables:       [],   // [{id, name, items: [], pagesScraped, sprintName, createdAt}]
+  activeTableId: null,
+  view:         'new-table', // 'new-table' | 'main' | 'settings'
+  scraping:     false,
+  settings: {
+    buildField: DEFAULT_BUILD_FIELD,
+    sortOrder:  'priority',
+  },
+};
+
+// ── DOM refs ───────────────────────────────────────────────────
+
+const $ = id => document.getElementById(id);
+
+const DOM = {
+  views: {
+    newTable: $('view-new-table'),
+    main:     $('view-main'),
+    settings: $('view-settings'),
+    addRow:   $('view-add-row'),
+  },
+  header: {
+    tableLabel: $('current-table-label'),
+    btnSettings:$('btn-settings'),
+  },
+  newTable: {
+    nameInput:  $('table-name-input'),
+    btnCreate:  $('btn-create-table'),
+    btnCancel:  $('btn-cancel-create'),
+  },
+  main: {
+    sprintStrip:      $('sprint-strip'),
+    sprintName:       $('sprint-name-display'),
+    pagesScraped:     $('pages-scraped-display'),
+    statusBar:        $('status-bar'),
+    statusIcon:       $('status-icon'),
+    statusText:       $('status-text'),
+    btnScrape:        $('btn-scrape'),
+    btnUndo:          $('btn-undo-page'),
+    chipsRow:         $('status-chips'),
+    tableWrapper:     $('table-wrapper'),
+    tableCount:       $('table-count'),
+    resultsBody:      $('results-body'),
+    btnCopyHtml:      $('btn-copy-html'),
+    btnCopyText:      $('btn-copy-text'),
+    btnNewTable:      $('btn-new-table'),
+    btnClearTable:    $('btn-clear-table'),
+  },
+  settings: {
+    buildFieldInput:  $('build-field-input'),
+    sortOrderSelect:  $('sort-order-select'),
+    btnSave:          $('btn-save-settings'),
+    btnClose:         $('btn-close-settings'),
+  },
+  toast: $('toast'),
+};
+
+// ── Storage helpers ────────────────────────────────────────────
+
+async function loadState() {
+  return new Promise(resolve => {
+    chrome.storage.local.get([STORAGE_KEY, SETTINGS_KEY], result => {
+      if (result[STORAGE_KEY]) {
+        state.tables        = result[STORAGE_KEY].tables        || [];
+        state.activeTableId = result[STORAGE_KEY].activeTableId || null;
+      }
+      if (result[SETTINGS_KEY]) {
+        state.settings = { ...state.settings, ...result[SETTINGS_KEY] };
+      }
+      resolve();
+    });
+  });
+}
+
+function saveState() {
+  chrome.storage.local.set({
+    [STORAGE_KEY]:  { tables: state.tables, activeTableId: state.activeTableId },
+    [SETTINGS_KEY]: state.settings,
+  });
+}
+
+// ── Table helpers ──────────────────────────────────────────────
+
+function getActiveTable() {
+  return state.tables.find(t => t.id === state.activeTableId) || null;
+}
+
+function createTable(name) {
+  const table = {
+    id:           Date.now().toString(),
+    name:         name.trim(),
+    items:        [],
+    pagesScraped: 0,
+    sprintName:   '',
+    createdAt:    new Date().toLocaleString(),
+    pageSnapshots:[],  // [{pageUrl, itemIds, scrapedAt}]
+  };
+  state.tables.push(table);
+  state.activeTableId = table.id;
+  saveState();
+  return table;
+}
+
+function mergeItems(existing, incoming) {
+  // Merge incoming items; avoid duplicate (id, status, assignedTo) rows
+  const key = item => `${item.id}|${item.status}|${item.assignedTo}`;
+  const existingKeys = new Set(existing.map(key));
+  const added = [];
+  incoming.forEach(item => {
+    if (!existingKeys.has(key(item))) {
+      existing.push(item);
+      added.push(item);
+    }
+  });
+  return added;
+}
+
+// ── View management ────────────────────────────────────────────
+
+function showView(viewName) {
+  Object.values(DOM.views).forEach(v => (v.style.display = 'none'));
+  DOM.views[viewName].style.display = '';
+  state.view = viewName;
+}
+
+function updateHeaderLabel() {
+  const t = getActiveTable();
+  DOM.header.tableLabel.textContent = t ? `📋 ${t.name}` : 'No active table';
+}
+
+// ── Render main view ───────────────────────────────────────────
+
+function renderMain() {
+  const table = getActiveTable();
+  if (!table) { showView('newTable'); return; }
+
+  showView('main');
+  updateHeaderLabel();
+
+  // Sprint strip
+  if (table.sprintName) {
+    DOM.main.sprintName.textContent    = table.sprintName;
+    DOM.main.pagesScraped.textContent  = table.pagesScraped;
+    DOM.main.sprintStrip.style.display = '';
+  } else {
+    DOM.main.sprintStrip.style.display = 'none';
+  }
+
+  // Undo button
+  DOM.main.btnUndo.style.display = table.pagesScraped > 0 ? '' : 'none';
+
+  if (table.items.length === 0) {
+    DOM.main.tableWrapper.style.display = 'none';
+    DOM.main.chipsRow.style.display     = 'none';
+    setStatus('idle', 'Navigate to a sprint board and click Scrape.');
+    return;
+  }
+
+  // Chips
+  renderChips(table.items);
+
+  // Table
+  renderTable(table.items);
+  DOM.main.tableWrapper.style.display = '';
+  DOM.main.tableCount.textContent     = `${table.items.length} item${table.items.length !== 1 ? 's' : ''}`;
+
+  if (!state.scraping) setStatus('idle', `${table.items.length} items — scrape more pages or copy the table.`);
+}
+
+function renderChips(items) {
+  const counts = {};
+  items.forEach(i => { counts[i.status] = (counts[i.status] || 0) + 1; });
+  DOM.main.chipsRow.innerHTML = '';
+  const order = ['QA Test in progress','Ready','Blocked','Dev Test in progress','Pending Dev Test'];
+  order.forEach(s => {
+    if (!counts[s]) return;
+    const st = STATUS_STYLE[s] || {};
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.style.background = st.chipBg || '#eee';
+    chip.style.color       = st.chipColor || '#333';
+    chip.textContent = `${s}: ${counts[s]}`;
+    DOM.main.chipsRow.appendChild(chip);
+  });
+  DOM.main.chipsRow.style.display = '';
+}
+
+function removeItem(rowKey) {
+  const table = getActiveTable();
+  if (!table) return;
+  table.items = table.items.filter(i => i.rowKey !== rowKey);
+  saveState();
+  renderMain();
+}
+
+function renderTable(items) {
+  const sorted = sortItems(items);
+  DOM.main.resultsBody.innerHTML = sorted.map(item => {
+    const st       = STATUS_STYLE[item.status] || { bg: '#eee', color: '#333' };
+    const safeKey  = escHtml(item.rowKey || '');
+    const reviewTip = item.needsReview
+      ? `Missing standard tasks: ${item.missingTasks.join(', ')} — please verify before including`
+      : '';
+    const reviewBadge = item.needsReview
+      ? `<span class="review-badge" title="${escHtml(reviewTip)}">⚠ Review</span>`
+      : '';
+    const rowClass = item.needsReview ? ' class="row-needs-review"' : '';
+    return `
+      <tr${rowClass}>
+        <td class="col-delete">
+          <button class="btn-delete" data-key="${safeKey}" title="Remove this row">✕</button>
+        </td>
+        <td class="col-case">
+          <a class="case-link" href="${escHtml(item.url)}" target="_blank">#${item.id}</a>
+        </td>
+        <td class="col-title">${escHtml(item.title)}${reviewBadge}</td>
+        <td class="col-person">${escHtml(item.assignedTo)}</td>
+        <td class="col-status">
+          <span class="status-badge" style="background:${st.bg};color:${st.color}">
+            ${escHtml(item.status)}
+          </span>
+        </td>
+        <td class="col-notes">${escHtml(item.notes || '')}</td>
+      </tr>`;
+  }).join('');
+
+  DOM.main.resultsBody.querySelectorAll('.btn-delete').forEach(btn => {
+    btn.addEventListener('click', () => removeItem(btn.dataset.key));
+  });
+}
+
+function sortItems(items) {
+  const STATUS_ORDER = {
+    'QA Test in progress':   1,
+    'Ready':                 2,
+    'Pending Passing Build': 3,
+    'Blocked':               4,
+    'Dev Test in progress':  5,
+    'Pending Dev Test':      6,
+  };
+  const sorted = [...items];
+  if (state.settings.sortOrder === 'id') {
+    sorted.sort((a, b) => a.id - b.id);
+  } else {
+    sorted.sort((a, b) => (STATUS_ORDER[a.status] || 9) - (STATUS_ORDER[b.status] || 9));
+  }
+  return sorted;
+}
+
+// ── Status bar ─────────────────────────────────────────────────
+
+function setStatus(type, text) {
+  const map = {
+    idle:    'status-idle',
+    loading: 'status-loading',
+    success: 'status-success',
+    error:   'status-error',
+  };
+  const icons = { idle: '●', loading: '⟳', success: '✓', error: '✕' };
+  DOM.main.statusBar.className = `status-bar ${map[type] || 'status-idle'}`;
+  DOM.main.statusIcon.textContent = icons[type] || '●';
+  DOM.main.statusIcon.className   = type === 'loading' ? 'spin' : '';
+  DOM.main.statusText.textContent = text;
+}
+
+// ── Toast ──────────────────────────────────────────────────────
+
+let toastTimer;
+function showToast(msg) {
+  DOM.toast.textContent = msg;
+  DOM.toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => DOM.toast.classList.remove('show'), 2400);
+}
+
+// ── Scrape ─────────────────────────────────────────────────────
+
+async function doScrape() {
+  if (state.scraping) return;
+  state.scraping = true;
+
+  const table = getActiveTable();
+  if (!table) { showView('newTable'); state.scraping = false; return; }
+
+  DOM.main.btnScrape.disabled = true;
+  setStatus('loading', 'Scraping sprint data via Azure DevOps API…');
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+    // Verify it's an ADO page
+    if (!tab.url || (!tab.url.includes('dev.azure.com') && !tab.url.includes('visualstudio.com'))) {
+      throw new Error('Please navigate to an Azure DevOps sprint Taskboard or Backlog first.');
+    }
+
+    const response = await new Promise((resolve, reject) => {
+      // Always inject the content script first. The guard in content.js
+      // (window.__qaScraperLoaded) ensures duplicate injection is safe —
+      // a second injection simply skips re-registering the listener.
+      chrome.scripting.executeScript(
+        { target: { tabId: tab.id }, files: ['content.js'] },
+        () => {
+          if (chrome.runtime.lastError) {
+            reject(new Error('Could not inject scraper: ' + chrome.runtime.lastError.message));
+            return;
+          }
+          // Small delay to let the script settle before messaging
+          setTimeout(() => {
+            chrome.tabs.sendMessage(tab.id, { action: 'scrape' }, resp => {
+              if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+              } else {
+                resolve(resp);
+              }
+            });
+          }, 150);
+        }
+      );
+    });
+
+    if (!response || !response.success) {
+      throw new Error(response?.error || 'Unknown scraping error.');
+    }
+
+    const { items, sprintName, scrapedAt, pageUrl } = response.data;
+
+    // Update sprint name if not set
+    if (sprintName && !table.sprintName) table.sprintName = sprintName;
+
+    // Merge items, track snapshot for undo
+    const snapshotBefore = table.items.map(i => ({ ...i }));
+    const added = mergeItems(table.items, items);
+
+    table.pagesScraped += 1;
+    table.pageSnapshots.push({
+      pageUrl,
+      scrapedAt,
+      snapshotBefore,
+      itemsAdded: added.length,
+    });
+
+    saveState();
+    renderMain();
+
+    const msg = added.length > 0
+      ? `✓ Added ${added.length} new item${added.length !== 1 ? 's' : ''} from this page.`
+      : `✓ Page scraped — no new items found (${items.length} already captured).`;
+    setStatus('success', msg);
+
+  } catch (err) {
+    setStatus('error', err.message);
+  } finally {
+    state.scraping = false;
+    DOM.main.btnScrape.disabled = false;
+  }
+}
+
+// ── Undo last page ─────────────────────────────────────────────
+
+function undoLastPage() {
+  const table = getActiveTable();
+  if (!table || !table.pageSnapshots.length) return;
+
+  const last = table.pageSnapshots.pop();
+  table.items = last.snapshotBefore;
+  table.pagesScraped = Math.max(0, table.pagesScraped - 1);
+  if (table.pagesScraped === 0) table.sprintName = '';
+
+  saveState();
+  renderMain();
+  showToast(`↩ Removed last page (${last.itemsAdded} items undone)`);
+}
+
+// ── Copy helpers ───────────────────────────────────────────────
+
+function buildHtmlTable(items) {
+  const sorted = sortItems(items);
+  const rows = sorted.map(item => {
+    const st = STATUS_STYLE[item.status] || { bg: '#eee', color: '#333' };
+    const caseCell = `<a href="${item.url}" style="color:#0078d4;font-weight:600;text-decoration:none">#${item.id}</a>`;
+    const badge    = `<span style="display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;background:${st.bg};color:${st.color}">${escHtml(item.status)}</span>`;
+    return `    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;white-space:nowrap">${caseCell}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0">${escHtml(item.title)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;white-space:nowrap">${escHtml(item.assignedTo)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0">${badge}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0">${escHtml(item.notes || '')}</td>
+    </tr>`;
+  }).join('\n');
+
+  const table = getActiveTable();
+  const heading = table
+    ? `<p style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:8px">${escHtml(table.name)}</p>`
+    : '';
+
+  return `${heading}<table style="border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%">
+  <thead>
+    <tr style="background:#f0f0f0">
+      <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0;white-space:nowrap">Case #</th>
+      <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Title</th>
+      <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0;white-space:nowrap">Assigned To</th>
+      <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Status</th>
+      <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+${rows}
+  </tbody>
+</table>`;
+}
+
+function buildPlainText(items) {
+  const sorted = sortItems(items);
+  const table = getActiveTable();
+  const header = table ? `${table.name}\n${'─'.repeat(table.name.length)}\n` : '';
+  const cols = ['Case #', 'Title', 'Assigned To', 'Status', 'Notes'];
+
+  // Calculate column widths
+  const widths = cols.map((c, i) => {
+    const vals = sorted.map(item => {
+      const row = [`#${item.id}`, item.title, item.assignedTo, item.status, item.notes || ''];
+      return row[i] || '';
+    });
+    return Math.max(c.length, ...vals.map(v => v.length));
+  });
+
+  const pad = (s, w) => String(s).padEnd(w);
+  const divider = widths.map(w => '─'.repeat(w)).join('  ');
+  const headerRow = cols.map((c, i) => pad(c, widths[i])).join('  ');
+
+  const rows = sorted.map(item => {
+    const row = [`#${item.id}`, item.title, item.assignedTo, item.status, item.notes || ''];
+    return row.map((v, i) => pad(v, widths[i])).join('  ');
+  });
+
+  return `${header}${headerRow}\n${divider}\n${rows.join('\n')}`;
+}
+
+async function copyHtml() {
+  const table = getActiveTable();
+  if (!table || !table.items.length) return;
+
+  const html = buildHtmlTable(table.items);
+  try {
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        'text/html':  new Blob([html],            { type: 'text/html' }),
+        'text/plain': new Blob([buildPlainText(table.items)], { type: 'text/plain' }),
+      }),
+    ]);
+    showToast('📋 Copied as rich-text table — paste into your email!');
+  } catch {
+    // Fallback: copy plain text
+    await navigator.clipboard.writeText(html);
+    showToast('📋 Copied HTML — paste into email as HTML source.');
+  }
+}
+
+async function copyPlainText() {
+  const table = getActiveTable();
+  if (!table || !table.items.length) return;
+  await navigator.clipboard.writeText(buildPlainText(table.items));
+  showToast('📄 Copied plain text table.');
+}
+
+// ── Utility ────────────────────────────────────────────────────
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ── Add Row feature ────────────────────────────────────────────
+
+let lookupResult = null; // cache of last fetched case
+
+function showAddRow() {
+  showView('addRow');
+  updateHeaderLabel();
+  // Reset to lookup tab
+  switchAddRowTab('lookup');
+  // Clear previous lookup
+  lookupResult = null;
+  $('lookup-input').value = '';
+  $('lookup-result').style.display = 'none';
+  $('lookup-status').style.display = 'none';
+  $('lookup-task-list').innerHTML = '';
+  setTimeout(() => $('lookup-input').focus(), 50);
+}
+
+function switchAddRowTab(tab) {
+  $('pane-lookup').style.display  = tab === 'lookup' ? '' : 'none';
+  $('pane-manual').style.display  = tab === 'manual' ? '' : 'none';
+  $('tab-lookup').className = 'tab-btn' + (tab === 'lookup' ? ' tab-active' : '');
+  $('tab-manual').className = 'tab-btn' + (tab === 'manual' ? ' tab-active' : '');
+}
+
+function setLookupStatus(type, text) {
+  const el = $('lookup-status');
+  el.style.display = '';
+  const map  = { idle: 'status-idle', loading: 'status-loading', success: 'status-success', error: 'status-error' };
+  const icons = { idle: '●', loading: '⟳', success: '✓', error: '✕' };
+  el.className = `status-bar ${map[type] || 'status-idle'}`;
+  $('lookup-status-icon').textContent = icons[type] || '●';
+  $('lookup-status-icon').className   = type === 'loading' ? 'spin' : '';
+  $('lookup-status-text').textContent = text;
+}
+
+// Extract a plain case ID from either a raw number or a full ADO URL
+function parseCaseInput(raw) {
+  raw = raw.trim();
+  // Plain number
+  if (/^\d+$/.test(raw)) return raw;
+  // URL ending in /edit/12345 or /_workitems/edit/12345
+  const m = raw.match(/\/(\d+)\s*$/);
+  if (m) return m[1];
+  // ?workItemId=12345
+  const q = raw.match(/[?&]workItemId=(\d+)/i);
+  if (q) return q[1];
+  return null;
+}
+
+async function doLookup() {
+  const raw    = $('lookup-input').value;
+  const caseId = parseCaseInput(raw);
+  if (!caseId) {
+    setLookupStatus('error', 'Enter a case number or ADO URL.');
+    return;
+  }
+
+  setLookupStatus('loading', `Looking up #${caseId}…`);
+  $('lookup-result').style.display = 'none';
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab.url || (!tab.url.includes('dev.azure.com') && !tab.url.includes('visualstudio.com'))) {
+      throw new Error('Navigate to an Azure DevOps page first so the scraper can use your session.');
+    }
+
+    const response = await new Promise((resolve, reject) => {
+      chrome.scripting.executeScript(
+        { target: { tabId: tab.id }, files: ['content.js'] },
+        () => {
+          if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+          setTimeout(() => {
+            chrome.tabs.sendMessage(tab.id, { action: 'fetchCase', caseId }, resp => {
+              if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+              else resolve(resp);
+            });
+          }, 150);
+        }
+      );
+    });
+
+    if (!response?.success) throw new Error(response?.error || 'Unknown error.');
+
+    lookupResult = response.data;
+    renderLookupResult(lookupResult);
+    setLookupStatus('success', `Found: #${lookupResult.id} — ${lookupResult.state}`);
+
+  } catch (err) {
+    setLookupStatus('error', err.message);
+  }
+}
+
+function renderLookupResult(data) {
+  const link = $('lookup-case-link');
+  link.textContent = `#${data.id}`;
+  link.href = data.url;
+  $('lookup-case-title').textContent = data.title;
+
+  const list = $('lookup-task-list');
+  list.innerHTML = '';
+
+  if (!data.tasks.length) {
+    $('lookup-no-tasks').style.display = '';
+    $('lookup-result').style.display   = '';
+    return;
+  }
+  $('lookup-no-tasks').style.display = 'none';
+
+  data.tasks.forEach(task => {
+    const item = document.createElement('div');
+    item.className = 'task-item';
+    item.dataset.taskId = task.id;
+
+    // Default status derived from task state
+    const defaultStatus = inferStatus(task.state);
+
+    item.innerHTML = `
+      <input type="checkbox" class="task-checkbox" id="task-cb-${task.id}" />
+      <div class="task-item-body">
+        <label class="task-item-title" for="task-cb-${task.id}">${escHtml(task.title)}</label>
+        <div class="task-item-meta">${escHtml(task.state)} · ${escHtml(task.assignedTo)}</div>
+        <div class="task-item-controls">
+          <select class="task-status-select" title="Status for this row">
+            ${Object.keys(STATUS_STYLE).map(s =>
+              `<option value="${escHtml(s)}"${s === defaultStatus ? ' selected' : ''}>${escHtml(s)}</option>`
+            ).join('')}
+          </select>
+          <input class="task-notes-input" type="text"
+            placeholder="Notes (optional)"
+            value="${escHtml(data.buildNote || '')}" />
+        </div>
+      </div>`;
+
+    // Toggle selection highlight when checkbox changes
+    item.querySelector('.task-checkbox').addEventListener('change', e => {
+      item.classList.toggle('task-selected', e.target.checked);
+    });
+    // Clicking the row (not the controls) toggles the checkbox
+    item.addEventListener('click', e => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'LABEL') return;
+      const cb = item.querySelector('.task-checkbox');
+      cb.checked = !cb.checked;
+      item.classList.toggle('task-selected', cb.checked);
+    });
+
+    list.appendChild(item);
+  });
+
+  $('lookup-result').style.display = '';
+}
+
+// Infer a reasonable default status from the raw ADO task state
+function inferStatus(taskState) {
+  if (taskState === 'In Progress') return 'QA Test in progress';
+  if (taskState === 'To Do')       return 'Ready';
+  if (taskState === 'Done')        return 'Ready';
+  return 'Ready';
+}
+
+function addSelectedRows() {
+  if (!lookupResult) return;
+  const table = getActiveTable();
+  if (!table) return;
+
+  const items = $('lookup-task-list').querySelectorAll('.task-item');
+  let added = 0;
+
+  items.forEach(item => {
+    const cb = item.querySelector('.task-checkbox');
+    if (!cb.checked) return;
+
+    const taskId   = item.dataset.taskId;
+    const task     = lookupResult.tasks.find(t => String(t.id) === String(taskId));
+    const status   = item.querySelector('.task-status-select').value;
+    const notes    = item.querySelector('.task-notes-input').value.trim();
+    const assignedTo = task ? task.assignedTo : 'Unassigned';
+    const rowKey   = `${lookupResult.id}|${status}|${assignedTo}`;
+
+    // Skip if exact duplicate already in table
+    if (table.items.some(i => i.rowKey === rowKey)) return;
+
+    table.items.push({
+      id:          lookupResult.id,
+      title:       lookupResult.title,
+      url:         lookupResult.url,
+      assignedTo,
+      status,
+      notes,
+      taskTitle:   task?.title || '',
+      needsReview: false,
+      missingTasks:[],
+      rowKey,
+    });
+    added++;
+  });
+
+  if (added === 0) {
+    showToast('No new rows to add — check checkboxes or deselect duplicates.');
+    return;
+  }
+  saveState();
+  showToast(`＋ Added ${added} row${added !== 1 ? 's' : ''}.`);
+  renderMain();
+}
+
+function addManualRow() {
+  const table = getActiveTable();
+  if (!table) return;
+
+  const caseId   = $('manual-case').value.trim();
+  const title    = $('manual-title').value.trim();
+  const assigned = $('manual-assigned').value.trim() || 'Unassigned';
+  const status   = $('manual-status').value;
+  const notes    = $('manual-notes').value.trim();
+
+  if (!caseId || !title) {
+    showToast('Case # and Title are required.');
+    return;
+  }
+  if (!/^\d+$/.test(caseId)) {
+    showToast('Case # must be a number.');
+    return;
+  }
+
+  const rowKey = `${caseId}|${status}|${assigned}`;
+  if (table.items.some(i => i.rowKey === rowKey)) {
+    showToast('This row already exists in the table.');
+    return;
+  }
+
+  table.items.push({
+    id:          parseInt(caseId, 10),
+    title,
+    url:         '', // no URL for manual rows
+    assignedTo:  assigned,
+    status,
+    notes,
+    taskTitle:   '',
+    needsReview: false,
+    missingTasks:[],
+    rowKey,
+  });
+
+  saveState();
+  // Clear fields for next entry
+  $('manual-case').value = $('manual-title').value = $('manual-assigned').value = $('manual-notes').value = '';
+  showToast('＋ Row added.');
+  renderMain();
+}
+
+// ── Event wiring ────────────────────────────────────────────────
+
+function wireEvents() {
+  // New table form
+  DOM.newTable.btnCreate.addEventListener('click', () => {
+    const name = DOM.newTable.nameInput.value.trim();
+    if (!name) {
+      DOM.newTable.nameInput.focus();
+      DOM.newTable.nameInput.style.borderColor = '#a4262c';
+      return;
+    }
+    DOM.newTable.nameInput.style.borderColor = '';
+    createTable(name);
+    DOM.newTable.nameInput.value = '';
+    renderMain();
+  });
+
+  DOM.newTable.nameInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') DOM.newTable.btnCreate.click();
+  });
+
+  DOM.newTable.btnCancel.addEventListener('click', () => {
+    if (getActiveTable()) renderMain();
+  });
+
+  // Scrape
+  DOM.main.btnScrape.addEventListener('click', doScrape);
+
+  // Undo
+  DOM.main.btnUndo.addEventListener('click', undoLastPage);
+
+  // Copy
+  DOM.main.btnCopyHtml.addEventListener('click', copyHtml);
+  DOM.main.btnCopyText.addEventListener('click', copyPlainText);
+
+  // Add Row button
+  DOM.main.btnAddRow = $('btn-add-row');
+  DOM.main.btnAddRow.addEventListener('click', showAddRow);
+
+  // Add Row view — tab switching
+  $('tab-lookup').addEventListener('click', () => switchAddRowTab('lookup'));
+  $('tab-manual').addEventListener('click', () => switchAddRowTab('manual'));
+
+  // ADO Lookup
+  $('btn-lookup').addEventListener('click', doLookup);
+  $('lookup-input').addEventListener('keydown', e => { if (e.key === 'Enter') doLookup(); });
+  $('btn-add-selected').addEventListener('click', addSelectedRows);
+
+  // Manual entry
+  $('btn-add-manual').addEventListener('click', addManualRow);
+  $('manual-notes').addEventListener('keydown', e => { if (e.key === 'Enter') addManualRow(); });
+
+  // Back button
+  $('btn-add-row-back').addEventListener('click', () => {
+    if (getActiveTable()) renderMain();
+    else showView('newTable');
+  });
+
+  // New table
+  DOM.main.btnNewTable.addEventListener('click', () => {
+    // Show new table form with cancel button visible
+    DOM.newTable.btnCancel.style.display = '';
+    DOM.newTable.nameInput.value = '';
+    showView('newTable');
+    updateHeaderLabel();
+    setTimeout(() => DOM.newTable.nameInput.focus(), 50);
+  });
+
+  // Clear table
+  DOM.main.btnClearTable.addEventListener('click', () => {
+    const table = getActiveTable();
+    if (!table) return;
+    if (!confirm(`Clear all ${table.items.length} items from "${table.name}"? This cannot be undone.`)) return;
+    table.items        = [];
+    table.pagesScraped = 0;
+    table.sprintName   = '';
+    table.pageSnapshots= [];
+    saveState();
+    renderMain();
+    showToast('🗑 Table cleared.');
+  });
+
+  // Settings
+  DOM.header.btnSettings.addEventListener('click', () => {
+    DOM.settings.buildFieldInput.value  = state.settings.buildField;
+    DOM.settings.sortOrderSelect.value  = state.settings.sortOrder;
+    showView('settings');
+  });
+
+  DOM.settings.btnSave.addEventListener('click', () => {
+    state.settings.buildField = DOM.settings.buildFieldInput.value.trim() || DEFAULT_BUILD_FIELD;
+    state.settings.sortOrder  = DOM.settings.sortOrderSelect.value;
+    saveState();
+    showToast('✓ Settings saved.');
+    if (getActiveTable()) renderMain();
+    else showView('newTable');
+  });
+
+  DOM.settings.btnClose.addEventListener('click', () => {
+    if (getActiveTable()) renderMain();
+    else showView('newTable');
+  });
+}
+
+// ── Init ────────────────────────────────────────────────────────
+
+(async () => {
+  await loadState();
+  wireEvents();
+
+  if (getActiveTable()) {
+    renderMain();
+  } else {
+    showView('newTable');
+    DOM.newTable.btnCancel.style.display = 'none';
+    updateHeaderLabel();
+    setTimeout(() => DOM.newTable.nameInput.focus(), 80);
+  }
+})();
