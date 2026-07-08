@@ -21,6 +21,17 @@ function styleForColumn(column) {
   return COLUMN_PALETTE[hash % COLUMN_PALETTE.length];
 }
 
+// Friendly label for the default QA workflow columns; any other board
+// column (custom rule sets can filter on anything) falls back to its
+// own name so it's still shown clearly.
+const READY_IN_PROGRESS_LABELS = {
+  'Ready For QA': 'Ready',
+  'In QA':        'In Progress',
+};
+function statusLabelFor(column) {
+  return READY_IN_PROGRESS_LABELS[column] || column;
+}
+
 const STORAGE_KEY = 'qaScraperTables';
 const SETTINGS_KEY = 'qaScraperSettings';
 
@@ -239,7 +250,7 @@ function renderChips(items) {
     chip.className = 'chip';
     chip.style.background = st.bg;
     chip.style.color       = st.color;
-    chip.textContent = `${col}: ${counts[col]}`;
+    chip.textContent = `${statusLabelFor(col)}: ${counts[col]}`;
     DOM.main.chipsRow.appendChild(chip);
   });
   DOM.main.chipsRow.style.display = '';
@@ -268,6 +279,9 @@ function renderTable(items) {
   DOM.main.resultsBody.innerHTML = sorted.map(item => {
     const st       = styleForColumn(item.column);
     const safeKey  = escHtml(item.rowKey || '');
+    const label    = statusLabelFor(item.column);
+    const subtext  = label !== item.column ? `<div class="status-subtext">${escHtml(item.column)}</div>` : '';
+
     return `
       <tr>
         <td class="col-delete">
@@ -278,16 +292,22 @@ function renderTable(items) {
         </td>
         <td class="col-title">${escHtml(item.title)}</td>
         <td class="col-person">
-          ${escHtml(computeAssignedTo(item))}
-          <select class="assignee-source-select" data-key="${safeKey}" title="Which assignee to display">
-            <option value="qaTask"${item.assigneeSource === 'qaTask' ? ' selected' : ''}${item.hasQaTask ? '' : ' disabled'}>QA Task</option>
-            <option value="parent"${item.assigneeSource === 'parent' ? ' selected' : ''}>Parent</option>
+          <div class="assignee-line${item.assigneeSource === 'qaTask' ? ' assignee-active' : ''}">
+            <span class="assignee-tag">QA</span>${escHtml(item.qaTaskAssignedTo || '—')}
+          </div>
+          <div class="assignee-line${item.assigneeSource === 'parent' ? ' assignee-active' : ''}">
+            <span class="assignee-tag">Parent</span>${escHtml(item.parentAssignedTo || '—')}
+          </div>
+          <select class="assignee-source-select" data-key="${safeKey}" title="Which assignee to use for this row">
+            <option value="qaTask"${item.assigneeSource === 'qaTask' ? ' selected' : ''}${item.hasQaTask ? '' : ' disabled'}>Use QA Task</option>
+            <option value="parent"${item.assigneeSource === 'parent' ? ' selected' : ''}>Use Parent</option>
           </select>
         </td>
         <td class="col-status">
           <span class="status-badge" style="background:${st.bg};color:${st.color}">
-            ${escHtml(item.column)}
+            ${escHtml(label)}
           </span>
+          ${subtext}
         </td>
         <td class="col-notes">${escHtml(item.notes || '')}</td>
       </tr>`;
@@ -442,7 +462,7 @@ function buildHtmlTable(items) {
   const rows = sorted.map(item => {
     const st = styleForColumn(item.column);
     const caseCell = `<a href="${item.url}" style="color:#0078d4;font-weight:600;text-decoration:none">#${item.id}</a>`;
-    const badge    = `<span style="display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;background:${st.bg};color:${st.color}">${escHtml(item.column)}</span>`;
+    const badge    = `<span style="display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;background:${st.bg};color:${st.color}">${escHtml(statusLabelFor(item.column))}</span>`;
     return `    <tr>
       <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;white-space:nowrap">${caseCell}</td>
       <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0">${escHtml(item.title)}</td>
@@ -463,7 +483,7 @@ function buildHtmlTable(items) {
       <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0;white-space:nowrap">Case #</th>
       <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Title</th>
       <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0;white-space:nowrap">Assigned To</th>
-      <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Column</th>
+      <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Status</th>
       <th style="padding:6px 8px;text-align:left;font-weight:600;border-bottom:2px solid #d0d0d0">Notes</th>
     </tr>
   </thead>
@@ -477,12 +497,12 @@ function buildPlainText(items) {
   const sorted = sortItems(items);
   const table = getActiveTable();
   const header = table ? `${table.name}\n${'─'.repeat(table.name.length)}\n` : '';
-  const cols = ['Case #', 'Title', 'Assigned To', 'Column', 'Notes'];
+  const cols = ['Case #', 'Title', 'Assigned To', 'Status', 'Notes'];
 
   // Calculate column widths
   const widths = cols.map((c, i) => {
     const vals = sorted.map(item => {
-      const row = [`#${item.id}`, item.title, computeAssignedTo(item), item.column, item.notes || ''];
+      const row = [`#${item.id}`, item.title, computeAssignedTo(item), statusLabelFor(item.column), item.notes || ''];
       return row[i] || '';
     });
     return Math.max(c.length, ...vals.map(v => v.length));
@@ -493,7 +513,7 @@ function buildPlainText(items) {
   const headerRow = cols.map((c, i) => pad(c, widths[i])).join('  ');
 
   const rows = sorted.map(item => {
-    const row = [`#${item.id}`, item.title, computeAssignedTo(item), item.column, item.notes || ''];
+    const row = [`#${item.id}`, item.title, computeAssignedTo(item), statusLabelFor(item.column), item.notes || ''];
     return row.map((v, i) => pad(v, widths[i])).join('  ');
   });
 
