@@ -109,6 +109,16 @@ Each row also has a **✕** to remove it from the table, and rows can be added
 manually via **+ Add Row** (ADO lookup by case number/URL, or fully manual
 entry).
 
+### Swimlanes
+If your board uses swimlanes, rows are automatically grouped under a
+swimlane header — in the popup table, the copied email table, and the
+plain-text export — matching how the cards are grouped on the board itself.
+Cards on the unnamed default lane are grouped under **Default** and always
+listed first; other lanes follow alphabetically. If the whole board uses
+only the default lane, no swimlane headers are shown at all. Swimlane is
+also available as a **Field** in the Filter Rules builder, so you can
+filter down to a specific lane (e.g. "Expedite") if you want.
+
 ---
 
 ## Undo

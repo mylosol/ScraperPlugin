@@ -11,6 +11,7 @@
 
 const RULE_FIELDS = [
   { key: 'column',           label: 'Column',              type: 'text'    },
+  { key: 'swimlane',          label: 'Swimlane',             type: 'text'    },
   { key: 'state',             label: 'State',               type: 'text'    },
   { key: 'workItemType',      label: 'Work Item Type',      type: 'text'    },
   { key: 'title',             label: 'Title',                type: 'text'    },
