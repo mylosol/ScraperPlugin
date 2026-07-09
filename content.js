@@ -163,7 +163,7 @@ function buildIdFromArtifactUrl(url) {
 }
 
 // Collect all build IDs linked to a set of parent work items,
-// fetch them from the Builds API in one call, and return a
+// fetch them from the Builds API in batches, and return a
 // map of buildId → buildNumber string.
 async function fetchBuildNumbers(baseApiUrl, projectEnc, parentWiMap) {
   const buildIds = new Set();
@@ -179,18 +179,27 @@ async function fetchBuildNumbers(baseApiUrl, projectEnc, parentWiMap) {
 
   if (!buildIds.size) return {};
 
-  const idList = [...buildIds].join(',');
-  const url = `${baseApiUrl}/${projectEnc}/_apis/build/builds?buildIds=${idList}&api-version=7.0`;
+  // Batched like fetchWorkItemsBatch/fetchParentsWithRelations — a board
+  // scrape can accumulate hundreds of linked builds across many cards
+  // (unlike the old sprint-scoped scrape), and a single unbatched request
+  // produces a URL long enough for ADO's edge to reject with a 404.
+  const BATCH = 200;
+  const idArray = [...buildIds];
+  const map = {};
 
-  try {
-    const data = await adoGet(url);
-    const map  = {};
-    (data.value || []).forEach(b => { map[b.id] = b.buildNumber; });
-    return map;
-  } catch (e) {
-    WARN('Build number fetch failed:', e.message);
-    return {};
+  for (let i = 0; i < idArray.length; i += BATCH) {
+    const slice = idArray.slice(i, i + BATCH).join(',');
+    const url = `${baseApiUrl}/${projectEnc}/_apis/build/builds?buildIds=${slice}&api-version=7.0`;
+    try {
+      const data = await adoGet(url);
+      (data.value || []).forEach(b => { map[b.id] = b.buildNumber; });
+      LOG(`  build number batch [${i}–${i + BATCH}]: ${(data.value || []).length} builds`);
+    } catch (e) {
+      WARN('Build number fetch failed:', e.message);
+    }
   }
+
+  return map;
 }
 
 // Return the linked build number string for a work item, or null.
