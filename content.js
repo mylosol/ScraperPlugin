@@ -256,6 +256,38 @@ function buildAreaClause(areaValues) {
   return `(${clauses.join(' OR ')})`;
 }
 
+// Azure DevOps never clears System.BoardColumn when an item leaves the
+// board, so filtering on that field alone matches years of closed/archived
+// work on long-lived boards. Look up each work item type's actual states
+// (via its process metadata, so this works with Agile/Scrum/CMMI/custom
+// templates) and collect the ones in the Completed/Removed categories, so
+// the board query can exclude them.
+async function fetchTerminalStates(baseApiUrl, projectEnc, workItemTypes) {
+  const excluded = new Set();
+
+  await Promise.all(workItemTypes.map(async type => {
+    try {
+      const typeEnc = encodeURIComponent(type);
+      const d = await adoGet(
+        `${baseApiUrl}/${projectEnc}/_apis/wit/workitemtypes/${typeEnc}/states?api-version=7.0`
+      );
+      (d.value || []).forEach(s => {
+        if (s.category === 'Completed' || s.category === 'Removed') excluded.add(s.name);
+      });
+    } catch (e) {
+      WARN(`State list fetch failed for type "${type}":`, e.message);
+    }
+  }));
+
+  return [...excluded];
+}
+
+function buildExcludedStatesClause(states) {
+  if (!states.length) return '';
+  const list = states.map(s => `'${s.replace(/'/g, "''")}'`).join(',');
+  return `[System.State] NOT IN (${list})`;
+}
+
 // ── Main scraper ─────────────────────────────────────────────
 
 const getDisplayName = field => {
@@ -288,6 +320,10 @@ async function scrapeAzureDevOpsBoardData() {
   LOG('  Area clause:', areaClause || '(none — whole project)');
   LOG('  Parent types:', backlogTypes.parentTypes);
 
+  const terminalStates = await fetchTerminalStates(baseApiUrl, projectEnc, backlogTypes.parentTypes);
+  const excludedStatesClause = buildExcludedStatesClause(terminalStates);
+  LOG('  Excluding Completed/Removed states:', terminalStates.length ? terminalStates : '(none found)');
+
   // ── 2. WIQL: cards currently on the board ───────────────────
   LOG('═══ Step 2: WIQL — querying board cards…');
   const wiqlProject = project.replace(/'/g, "''");
@@ -302,6 +338,7 @@ async function scrapeAzureDevOpsBoardData() {
         WHERE [System.TeamProject] = '${wiqlProject}'
           AND [System.WorkItemType] IN (${typesList})
           AND [System.BoardColumn] <> ''
+          ${excludedStatesClause ? `AND ${excludedStatesClause}` : ''}
           ${areaClause ? `AND ${areaClause}` : ''}
         ORDER BY [System.Id]
       `,
