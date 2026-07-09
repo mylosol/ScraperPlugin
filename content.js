@@ -80,9 +80,19 @@ function parseAzureDevOpsUrl(url) {
 
 // ── ADO REST helpers ─────────────────────────────────────────
 
+// Orgs backed by Azure AD (Entra ID) auth can respond to an unauthenticated
+// XHR/fetch call with a 302 redirect into the interactive sign-in flow
+// instead of a 401. That redirect target is cross-origin and returns
+// Access-Control-Allow-Origin: *, which is invalid for a credentialed
+// request — the browser blocks it and fetch() throws a generic, useless
+// "Failed to fetch" that gives no indication it was actually an auth
+// problem. This header tells the server to return a clean 401 instead,
+// which our existing !resp.ok handling already surfaces properly.
+const SUPPRESS_FEDAUTH_REDIRECT = { 'X-TFS-FedAuthRedirect': 'Suppress' };
+
 async function adoGet(url) {
   LOG('GET', url);
-  const resp = await fetch(url, { credentials: 'include' });
+  const resp = await fetch(url, { credentials: 'include', headers: SUPPRESS_FEDAUTH_REDIRECT });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error(`ADO API ${resp.status} → ${url}\n${text.slice(0, 300)}`);
@@ -95,7 +105,7 @@ async function adoPost(url, body) {
   const resp = await fetch(url, {
     method:      'POST',
     credentials: 'include',
-    headers:     { 'Content-Type': 'application/json' },
+    headers:     { 'Content-Type': 'application/json', ...SUPPRESS_FEDAUTH_REDIRECT },
     body:        JSON.stringify(body),
   });
   if (!resp.ok) {
