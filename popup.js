@@ -355,12 +355,9 @@ function tableRowHtml(item) {
 
 function renderTable(items) {
   const groups = groupBySwimlane(items);
-  const showSwimlanes = groups.length > 1;
 
   DOM.main.resultsBody.innerHTML = groups.map(group => {
-    const header = showSwimlanes
-      ? `<tr class="swimlane-header"><td colspan="6">${escHtml(swimlaneLabelFor(group.swimlane))}</td></tr>`
-      : '';
+    const header = `<tr class="swimlane-header"><td colspan="6">${escHtml(swimlaneLabelFor(group.swimlane))}</td></tr>`;
     return header + group.items.map(tableRowHtml).join('');
   }).join('');
 
@@ -545,11 +542,9 @@ function htmlTableRowHtml(item) {
 
 function buildHtmlTable(items) {
   const groups = groupBySwimlane(items);
-  const showSwimlanes = groups.length > 1;
 
   const rows = groups.map(group => {
     const rowsHtml = group.items.map(htmlTableRowHtml).join('\n');
-    if (!showSwimlanes) return rowsHtml;
     const header = `    <tr><td colspan="5" style="padding:8px 8px 4px;font-weight:700;font-size:12px;color:#3b3b3b">${escHtml(swimlaneLabelFor(group.swimlane))}</td></tr>`;
     return `${header}\n${rowsHtml}`;
   }).join('\n');
@@ -577,7 +572,6 @@ ${rows}
 
 function buildPlainText(items) {
   const groups = groupBySwimlane(items);
-  const showSwimlanes = groups.length > 1;
   const sorted = sortItems(items);
   const table = getActiveTable();
   const header = table ? `${table.name}\n${'─'.repeat(table.name.length)}\n` : '';
@@ -597,7 +591,7 @@ function buildPlainText(items) {
 
   const body = groups.map(group => {
     const rows = group.items.map(item => rowValues(item).map((v, i) => pad(v, widths[i])).join('  ')).join('\n');
-    return showSwimlanes ? `\n${swimlaneLabelFor(group.swimlane)}\n${rows}` : rows;
+    return `\n${swimlaneLabelFor(group.swimlane)}\n${rows}`;
   }).join('\n');
 
   return `${header}${headerRow}\n${divider}\n${body}`;
