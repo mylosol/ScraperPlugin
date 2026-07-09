@@ -503,7 +503,7 @@ async function doScrape() {
     setStatus('success', msg);
 
   } catch (err) {
-    setStatus('error', err.message);
+    setStatus('error', friendlyErrorMessage(err.message));
   } finally {
     state.scraping = false;
     DOM.main.btnScrape.disabled = false;
@@ -631,6 +631,19 @@ async function copyPlainText() {
 
 // ── Utility ────────────────────────────────────────────────────
 
+// Turns a raw "ADO API 401/403 → ..." error (thrown by adoGet/adoPost in
+// content.js) into something actionable, instead of a raw API error dump.
+function friendlyErrorMessage(message) {
+  if (/^ADO API 401\b/.test(message)) {
+    return 'Not signed in to Azure DevOps (401). Refresh the Azure DevOps tab, ' +
+      'make sure you can see the board there, then try scraping again.';
+  }
+  if (/^ADO API 403\b/.test(message)) {
+    return 'Your account does not have permission to read this project (403).';
+  }
+  return message;
+}
+
 function escHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;')
@@ -728,7 +741,7 @@ async function doLookup() {
     setLookupStatus('success', `Found: #${lookupResult.id} — ${lookupResult.state}`);
 
   } catch (err) {
-    setLookupStatus('error', err.message);
+    setLookupStatus('error', friendlyErrorMessage(err.message));
   }
 }
 
