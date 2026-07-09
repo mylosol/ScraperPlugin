@@ -90,9 +90,23 @@ function parseAzureDevOpsUrl(url) {
 // which our existing !resp.ok handling already surfaces properly.
 const SUPPRESS_FEDAUTH_REDIRECT = { 'X-TFS-FedAuthRedirect': 'Suppress' };
 
+// Set once per message (see the onMessage listener below) from the PAT the
+// user configured in Settings, if any. Cookie auth (credentials: 'include')
+// alone isn't sufficient for orgs backed by Azure AD — a Personal Access
+// Token, sent as HTTP Basic auth, bypasses that entirely. When unset, every
+// request falls back to cookie-only auth exactly as before.
+let currentPat = null;
+
+function authHeaders() {
+  return currentPat ? { 'Authorization': 'Basic ' + btoa(':' + currentPat) } : {};
+}
+
 async function adoGet(url) {
   LOG('GET', url);
-  const resp = await fetch(url, { credentials: 'include', headers: SUPPRESS_FEDAUTH_REDIRECT });
+  const resp = await fetch(url, {
+    credentials: 'include',
+    headers: { ...SUPPRESS_FEDAUTH_REDIRECT, ...authHeaders() },
+  });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error(`ADO API ${resp.status} → ${url}\n${text.slice(0, 300)}`);
@@ -105,7 +119,7 @@ async function adoPost(url, body) {
   const resp = await fetch(url, {
     method:      'POST',
     credentials: 'include',
-    headers:     { 'Content-Type': 'application/json', ...SUPPRESS_FEDAUTH_REDIRECT },
+    headers:     { 'Content-Type': 'application/json', ...SUPPRESS_FEDAUTH_REDIRECT, ...authHeaders() },
     body:        JSON.stringify(body),
   });
   if (!resp.ok) {
@@ -492,6 +506,7 @@ async function scrapeAzureDevOpsBoardData() {
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.action === 'scrape') {
+      currentPat = message.pat || null;
       scrapeAzureDevOpsBoardData()
         .then(data => sendResponse({ success: true, data }))
         .catch(err => {
@@ -502,6 +517,7 @@ async function scrapeAzureDevOpsBoardData() {
     }
 
     if (message.action === 'fetchCase') {
+      currentPat = message.pat || null;
       fetchSingleCase(message.caseId)
         .then(data => sendResponse({ success: true, data }))
         .catch(err => {

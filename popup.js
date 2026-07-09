@@ -50,6 +50,7 @@ let state = {
   scraping:     false,
   settings: {
     sortOrder:  'id',
+    pat:        '',
   },
   ruleSets:         [],   // [{id, name, rules}]
   activeRuleSetId:  null,
@@ -114,6 +115,7 @@ const DOM = {
   },
   settings: {
     sortOrderSelect:  $('sort-order-select'),
+    patInput:         $('pat-input'),
     btnSave:          $('btn-save-settings'),
     btnClose:         $('btn-close-settings'),
   },
@@ -461,7 +463,7 @@ async function doScrape() {
           }
           // Small delay to let the script settle before messaging
           setTimeout(() => {
-            chrome.tabs.sendMessage(tab.id, { action: 'scrape' }, resp => {
+            chrome.tabs.sendMessage(tab.id, { action: 'scrape', pat: state.settings.pat }, resp => {
               if (chrome.runtime.lastError) {
                 reject(new Error(chrome.runtime.lastError.message));
               } else {
@@ -725,7 +727,7 @@ async function doLookup() {
         () => {
           if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
           setTimeout(() => {
-            chrome.tabs.sendMessage(tab.id, { action: 'fetchCase', caseId }, resp => {
+            chrome.tabs.sendMessage(tab.id, { action: 'fetchCase', caseId, pat: state.settings.pat }, resp => {
               if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
               else resolve(resp);
             });
@@ -1116,6 +1118,7 @@ function wireEvents() {
   // Settings
   DOM.header.btnSettings.addEventListener('click', () => {
     DOM.settings.sortOrderSelect.value  = state.settings.sortOrder;
+    DOM.settings.patInput.value         = state.settings.pat;
     showView('settings');
   });
 
@@ -1145,6 +1148,7 @@ function wireEvents() {
 
   DOM.settings.btnSave.addEventListener('click', () => {
     state.settings.sortOrder  = DOM.settings.sortOrderSelect.value;
+    state.settings.pat        = DOM.settings.patInput.value.trim();
     saveState();
     showToast('✓ Settings saved.');
     if (getActiveTable()) renderMain();
