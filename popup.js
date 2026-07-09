@@ -32,6 +32,11 @@ function statusLabelFor(column) {
   return READY_IN_PROGRESS_LABELS[column] || column;
 }
 
+// System.BoardLane is '' for the unnamed default swimlane.
+function swimlaneLabelFor(swimlane) {
+  return swimlane && swimlane.trim() ? swimlane : 'Default';
+}
+
 const STORAGE_KEY = 'qaScraperTables';
 const SETTINGS_KEY = 'qaScraperSettings';
 const RULE_SETS_SYNC_KEY = 'qaScraperRuleSets'; // chrome.storage.sync — small, so it can follow the user across machines
@@ -309,43 +314,52 @@ function setAssigneeSource(rowKey, source) {
   renderMain();
 }
 
-function renderTable(items) {
-  const sorted = sortItems(items);
-  DOM.main.resultsBody.innerHTML = sorted.map(item => {
-    const st       = styleForColumn(item.column);
-    const safeKey  = escHtml(item.rowKey || '');
-    const label    = statusLabelFor(item.column);
-    const subtext  = label !== item.column ? `<div class="status-subtext">${escHtml(item.column)}</div>` : '';
+function tableRowHtml(item) {
+  const st       = styleForColumn(item.column);
+  const safeKey  = escHtml(item.rowKey || '');
+  const label    = statusLabelFor(item.column);
+  const subtext  = label !== item.column ? `<div class="status-subtext">${escHtml(item.column)}</div>` : '';
 
-    return `
-      <tr>
-        <td class="col-delete">
-          <button class="btn-delete" data-key="${safeKey}" title="Remove this row">✕</button>
-        </td>
-        <td class="col-case">
-          <a class="case-link" href="${escHtml(item.url)}" target="_blank">#${item.id}</a>
-        </td>
-        <td class="col-title">${escHtml(item.title)}</td>
-        <td class="col-person">
-          <div class="assignee-line${item.assigneeSource === 'qaTask' ? ' assignee-active' : ''}">
-            <span class="assignee-tag">QA</span>${escHtml(item.qaTaskAssignedTo || '—')}
-          </div>
-          <div class="assignee-line${item.assigneeSource === 'parent' ? ' assignee-active' : ''}">
-            <span class="assignee-tag">Parent</span>${escHtml(item.parentAssignedTo || '—')}
-          </div>
-          <select class="assignee-source-select" data-key="${safeKey}" title="Which assignee to use for this row">
-            <option value="qaTask"${item.assigneeSource === 'qaTask' ? ' selected' : ''}${item.hasQaTask ? '' : ' disabled'}>Use QA Task</option>
-            <option value="parent"${item.assigneeSource === 'parent' ? ' selected' : ''}>Use Parent</option>
-          </select>
-        </td>
-        <td class="col-status">
-          <span class="status-badge" style="background:${st.bg};color:${st.color}">
-            ${escHtml(label)}
-          </span>
-          ${subtext}
-        </td>
-        <td class="col-notes">${escHtml(item.notes || '')}</td>
-      </tr>`;
+  return `
+    <tr>
+      <td class="col-delete">
+        <button class="btn-delete" data-key="${safeKey}" title="Remove this row">✕</button>
+      </td>
+      <td class="col-case">
+        <a class="case-link" href="${escHtml(item.url)}" target="_blank">#${item.id}</a>
+      </td>
+      <td class="col-title">${escHtml(item.title)}</td>
+      <td class="col-person">
+        <div class="assignee-line${item.assigneeSource === 'qaTask' ? ' assignee-active' : ''}">
+          <span class="assignee-tag">QA</span>${escHtml(item.qaTaskAssignedTo || '—')}
+        </div>
+        <div class="assignee-line${item.assigneeSource === 'parent' ? ' assignee-active' : ''}">
+          <span class="assignee-tag">Parent</span>${escHtml(item.parentAssignedTo || '—')}
+        </div>
+        <select class="assignee-source-select" data-key="${safeKey}" title="Which assignee to use for this row">
+          <option value="qaTask"${item.assigneeSource === 'qaTask' ? ' selected' : ''}${item.hasQaTask ? '' : ' disabled'}>Use QA Task</option>
+          <option value="parent"${item.assigneeSource === 'parent' ? ' selected' : ''}>Use Parent</option>
+        </select>
+      </td>
+      <td class="col-status">
+        <span class="status-badge" style="background:${st.bg};color:${st.color}">
+          ${escHtml(label)}
+        </span>
+        ${subtext}
+      </td>
+      <td class="col-notes">${escHtml(item.notes || '')}</td>
+    </tr>`;
+}
+
+function renderTable(items) {
+  const groups = groupBySwimlane(items);
+  const showSwimlanes = groups.length > 1;
+
+  DOM.main.resultsBody.innerHTML = groups.map(group => {
+    const header = showSwimlanes
+      ? `<tr class="swimlane-header"><td colspan="6">${escHtml(swimlaneLabelFor(group.swimlane))}</td></tr>`
+      : '';
+    return header + group.items.map(tableRowHtml).join('');
   }).join('');
 
   DOM.main.resultsBody.querySelectorAll('.btn-delete').forEach(btn => {
@@ -364,6 +378,28 @@ function sortItems(items) {
     sorted.sort((a, b) => a.id - b.id);
   }
   return sorted;
+}
+
+// Groups items by swimlane (default/unnamed lane first, then alphabetical),
+// preserving each group's internal order from sortItems.
+function groupBySwimlane(items) {
+  const sorted = sortItems(items);
+  const groups = new Map();
+
+  sorted.forEach(item => {
+    const key = item.swimlane || '';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+
+  const orderedKeys = [...groups.keys()].sort((a, b) => {
+    if (a === b) return 0;
+    if (a === '') return -1;
+    if (b === '') return 1;
+    return a.localeCompare(b);
+  });
+
+  return orderedKeys.map(key => ({ swimlane: key, items: groups.get(key) }));
 }
 
 // ── Status bar ─────────────────────────────────────────────────
@@ -492,19 +528,28 @@ function undoLastPage() {
 
 // ── Copy helpers ───────────────────────────────────────────────
 
-function buildHtmlTable(items) {
-  const sorted = sortItems(items);
-  const rows = sorted.map(item => {
-    const st = styleForColumn(item.column);
-    const caseCell = `<a href="${item.url}" style="color:#0078d4;font-weight:600;text-decoration:none">#${item.id}</a>`;
-    const badge    = `<span style="display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;background:${st.bg};color:${st.color}">${escHtml(statusLabelFor(item.column))}</span>`;
-    return `    <tr>
+function htmlTableRowHtml(item) {
+  const st = styleForColumn(item.column);
+  const caseCell = `<a href="${item.url}" style="color:#0078d4;font-weight:600;text-decoration:none">#${item.id}</a>`;
+  const badge    = `<span style="display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;background:${st.bg};color:${st.color}">${escHtml(statusLabelFor(item.column))}</span>`;
+  return `    <tr>
       <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;white-space:nowrap">${caseCell}</td>
       <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0">${escHtml(item.title)}</td>
       <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;white-space:nowrap">${escHtml(computeAssignedTo(item))}</td>
       <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0">${badge}</td>
       <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0">${escHtml(item.notes || '')}</td>
     </tr>`;
+}
+
+function buildHtmlTable(items) {
+  const groups = groupBySwimlane(items);
+  const showSwimlanes = groups.length > 1;
+
+  const rows = groups.map(group => {
+    const rowsHtml = group.items.map(htmlTableRowHtml).join('\n');
+    if (!showSwimlanes) return rowsHtml;
+    const header = `    <tr><td colspan="5" style="padding:8px 8px 4px;font-weight:700;font-size:12px;color:#3b3b3b">${escHtml(swimlaneLabelFor(group.swimlane))}</td></tr>`;
+    return `${header}\n${rowsHtml}`;
   }).join('\n');
 
   const table = getActiveTable();
@@ -529,17 +574,18 @@ ${rows}
 }
 
 function buildPlainText(items) {
+  const groups = groupBySwimlane(items);
+  const showSwimlanes = groups.length > 1;
   const sorted = sortItems(items);
   const table = getActiveTable();
   const header = table ? `${table.name}\n${'─'.repeat(table.name.length)}\n` : '';
   const cols = ['Case #', 'Title', 'Assigned To', 'Status', 'Notes'];
 
-  // Calculate column widths
+  const rowValues = item => [`#${item.id}`, item.title, computeAssignedTo(item), statusLabelFor(item.column), item.notes || ''];
+
+  // Column widths computed across all items, so alignment is consistent across swimlane groups.
   const widths = cols.map((c, i) => {
-    const vals = sorted.map(item => {
-      const row = [`#${item.id}`, item.title, computeAssignedTo(item), statusLabelFor(item.column), item.notes || ''];
-      return row[i] || '';
-    });
+    const vals = sorted.map(item => rowValues(item)[i] || '');
     return Math.max(c.length, ...vals.map(v => v.length));
   });
 
@@ -547,12 +593,12 @@ function buildPlainText(items) {
   const divider = widths.map(w => '─'.repeat(w)).join('  ');
   const headerRow = cols.map((c, i) => pad(c, widths[i])).join('  ');
 
-  const rows = sorted.map(item => {
-    const row = [`#${item.id}`, item.title, computeAssignedTo(item), statusLabelFor(item.column), item.notes || ''];
-    return row.map((v, i) => pad(v, widths[i])).join('  ');
-  });
+  const body = groups.map(group => {
+    const rows = group.items.map(item => rowValues(item).map((v, i) => pad(v, widths[i])).join('  ')).join('\n');
+    return showSwimlanes ? `\n${swimlaneLabelFor(group.swimlane)}\n${rows}` : rows;
+  }).join('\n');
 
-  return `${header}${headerRow}\n${divider}\n${rows.join('\n')}`;
+  return `${header}${headerRow}\n${divider}\n${body}`;
 }
 
 async function copyHtml() {
@@ -690,7 +736,7 @@ function renderLookupResult(data) {
   const link = $('lookup-case-link');
   link.textContent = `#${data.id}`;
   link.href = data.url;
-  $('lookup-case-title').textContent = `${data.title} — ${data.column} · ${data.parentAssignedTo}`;
+  $('lookup-case-title').textContent = `${data.title} — ${data.column} (${swimlaneLabelFor(data.swimlane)}) · ${data.parentAssignedTo}`;
 
   const list = $('lookup-task-list');
   list.innerHTML = '';
@@ -764,6 +810,7 @@ function addSelectedRows() {
       workItemType:     '',
       state:            lookupResult.state,
       column:           lookupResult.column,
+      swimlane:         lookupResult.swimlane || '',
       parentAssignedTo: lookupResult.parentAssignedTo,
       qaTaskAssignedTo: task ? task.assignedTo : null,
       qaTaskTitle:      task?.title || '',
@@ -793,6 +840,7 @@ function addManualRow() {
   const title    = $('manual-title').value.trim();
   const assigned = $('manual-assigned').value.trim() || 'Unassigned';
   const column   = $('manual-column').value.trim() || '(No Column)';
+  const swimlane = $('manual-swimlane').value.trim();
   const notes    = $('manual-notes').value.trim();
 
   if (!caseId || !title) {
@@ -817,6 +865,7 @@ function addManualRow() {
     workItemType:     '',
     state:            '',
     column,
+    swimlane,
     parentAssignedTo: assigned,
     qaTaskAssignedTo: null,
     qaTaskTitle:      '',
@@ -829,7 +878,7 @@ function addManualRow() {
 
   saveState();
   // Clear fields for next entry
-  $('manual-case').value = $('manual-title').value = $('manual-assigned').value = $('manual-column').value = $('manual-notes').value = '';
+  $('manual-case').value = $('manual-title').value = $('manual-assigned').value = $('manual-column').value = $('manual-swimlane').value = $('manual-notes').value = '';
   showToast('＋ Row added.');
   renderMain();
 }

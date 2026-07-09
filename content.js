@@ -406,14 +406,18 @@ async function scrapeAzureDevOpsBoardData() {
   LOG('═══ Step 5: Building rows…');
   const results  = [];
   const seenKeys = new Set();
-  const columnsSeen = new Set();
+  const columnsSeen  = new Set();
+  const swimlanesSeen = new Set();
 
   parentIds.forEach(pid => {
     const wi = wiMap[pid];
     if (!wi) { WARN(`Skipping ${pid} — missing from wiMap`); return; }
 
     const column = wi.fields['System.BoardColumn'] || '(No Column)';
+    // System.BoardLane is '' for cards on the unnamed default lane.
+    const swimlane = wi.fields['System.BoardLane'] || '';
     columnsSeen.add(column);
+    swimlanesSeen.add(swimlane);
 
     const childTaskObjs = (parentToChildren[pid] || [])
       .map(cid => wiMap[cid])
@@ -445,6 +449,7 @@ async function scrapeAzureDevOpsBoardData() {
         workItemType:     wi.fields['System.WorkItemType'] || '',
         state:            wi.fields['System.State'] || '',
         column,
+        swimlane,
         parentAssignedTo,
         qaTaskAssignedTo,
         qaTaskTitle:      task?.fields['System.Title'] || '',
@@ -460,11 +465,12 @@ async function scrapeAzureDevOpsBoardData() {
     else makeRow(null);
   });
 
-  LOG(`\n═══ Complete. ${results.length} rows emitted across columns: [${[...columnsSeen].join(', ')}]`);
+  LOG(`\n═══ Complete. ${results.length} rows emitted across columns: [${[...columnsSeen].join(', ')}], swimlanes: [${[...swimlanesSeen].map(s => s || '(Default)').join(', ')}]`);
 
   return {
     items:     results,
     columns:   [...columnsSeen],
+    swimlanes: [...swimlanesSeen],
     boardName: `${parsed.team} Board`,
     scrapedAt: new Date().toLocaleString(),
     pageUrl:   window.location.href,
@@ -574,6 +580,7 @@ async function fetchSingleCase(caseId) {
     url:              `${baseApiUrl}/${projectEnc}/_workitems/edit/${wi.id}`,
     state:            wi.fields['System.State'] || '',
     column:           wi.fields['System.BoardColumn'] || '(No Column)',
+    swimlane:         wi.fields['System.BoardLane'] || '',
     parentAssignedTo: getDisplayName(wi.fields['System.AssignedTo']),
     buildNote,
     tasks: tasks.map(t => ({
