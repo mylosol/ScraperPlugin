@@ -136,6 +136,31 @@ Click the **⚙** gear icon to configure:
 | Setting | Default | Description |
 |---|---|---|
 | Row sort order | By Case # (ascending) | Sort by Case # or alphabetically by board Column |
+| Personal Access Token | (none) | See below — only needed for Azure AD-backed orgs |
+
+### Personal Access Token (Azure AD orgs)
+Some Azure DevOps organizations are backed by Azure AD (Entra ID) sign-in.
+For those orgs, the browser session cookies the extension normally relies
+on aren't sufficient to authenticate its background API calls — you'll see
+scrapes fail with `Not signed in to Azure DevOps (401)` even though the
+board itself loads fine in the browser.
+
+If that happens, create a PAT and paste it into Settings:
+
+1. In Azure DevOps, click your profile icon (top right) → **Personal access
+   tokens** → **+ New Token**
+2. Name it something like "QA Update Scraper", set an expiration you're
+   comfortable with, and grant these scopes (read-only is enough):
+   - **Work Items** → Read
+   - **Project and Team** → Read
+3. Copy the generated token (you won't be able to see it again)
+4. In the extension, click **⚙** → paste it into **Personal Access Token**
+   → **Save Settings**
+
+The token is stored only in `chrome.storage.local` on this machine — it's
+never synced or sent anywhere except your own Azure DevOps organization's
+API. Leave it blank if cookie-based auth already works for your org; the
+extension falls back to that automatically.
 
 ---
 
@@ -152,8 +177,10 @@ Click the **⚙** gear icon to configure:
 Make sure you are on a Board URL (see formats above), not a Sprint
 Taskboard/Backlog, Repos, or Pipelines view.
 
-**"ADO API error 401"**
-You are not logged in. Log into Azure DevOps in Chrome, then try again.
+**"Not signed in to Azure DevOps (401)"**
+If refreshing the ADO tab and re-scraping doesn't fix it, your org likely
+uses Azure AD sign-in and needs a Personal Access Token — see
+[Settings](#personal-access-token-azure-ad-orgs) above.
 
 **"ADO API error 403"**
 Your account does not have permission to read this project's work items.
