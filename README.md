@@ -173,6 +173,16 @@ worth keeping in mind if you're deciding whether this satisfies your
 organization's credential-handling policies, since that's a judgment call
 for your IT/security team, not something this extension can determine.
 
+Because the token isn't remembered, save it in your organization's approved
+password manager right after creating it, so there's a compliant place to
+copy it back from each time it's needed — don't keep a copy anywhere else.
+
+Note also that saved Filter Rules (not the PAT) are synced via
+`chrome.storage.sync`, i.e. Google's Chrome Sync — worth confirming that's
+an acceptable destination for filter-rule content under your data
+classification policy if filter values could ever contain names or other
+internal identifiers.
+
 ---
 
 ## Supported Azure DevOps Formats

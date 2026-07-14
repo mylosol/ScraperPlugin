@@ -41,6 +41,8 @@ Click the **⚙** (Settings) icon → **Sign-in method** to choose how the exten
 - If a scrape fails with a message asking you to re-enter your token, that's why — go back to **⚙ → Personal Access Token** and paste it in again.
 - Check the **Sign-in method** back to **Browser session (cookies)** at any time to stop using a token entirely; nothing needs to be cleared out first.
 
+**Save the token in 1Password** as a new entry (e.g. "ADO PAT — QA Update Scraper") right after you create it, so you have a compliant place to copy it back from each time the extension asks for it again. Don't keep a copy anywhere else (a text file, a note, etc.).
+
 If your organization doesn't need a token, leave the sign-in method on **Browser session (cookies)** — that's the default and requires no setup.
 
 ---
