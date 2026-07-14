@@ -135,16 +135,15 @@ Click the **⚙** gear icon to configure:
 | Setting | Default | Description |
 |---|---|---|
 | Row sort order | By Case # (ascending) | Sort by Case # or alphabetically by board Column |
-| Personal Access Token | (none) | See below — only needed for Azure AD-backed orgs |
+| Sign-in method | Browser session (cookies) | `cookies` or `pat` — see below |
 
-### Personal Access Token (Azure AD orgs)
+### Sign-in method: cookies vs. Personal Access Token
 Some Azure DevOps organizations are backed by Azure AD (Entra ID) sign-in.
 For those orgs, the browser session cookies the extension normally relies
 on aren't sufficient to authenticate its background API calls — you'll see
 scrapes fail with `Not signed in to Azure DevOps (401)` even though the
-board itself loads fine in the browser.
-
-If that happens, create a PAT and paste it into Settings:
+board itself loads fine in the browser. If that happens, switch **Sign-in
+method** to **Personal Access Token**:
 
 1. In Azure DevOps, click your profile icon (top right) → **Personal access
    tokens** → **+ New Token**
@@ -153,13 +152,26 @@ If that happens, create a PAT and paste it into Settings:
    - **Work Items** → Read
    - **Project and Team** → Read
 3. Copy the generated token (you won't be able to see it again)
-4. In the extension, click **⚙** → paste it into **Personal Access Token**
-   → **Save Settings**
+4. In the extension, click **⚙** → set **Sign-in method** to **Personal
+   Access Token** → paste it into the field that appears → **Save Settings**
 
-The token is stored only in `chrome.storage.local` on this machine — it's
-never synced or sent anywhere except your own Azure DevOps organization's
-API. Leave it blank if cookie-based auth already works for your org; the
-extension falls back to that automatically.
+**The token is never persisted.** It's kept only in `background.js`'s
+in-memory state (`chrome.runtime.onMessage` handlers `setInMemoryPat` /
+`getInMemoryPat`) for the duration of the current browser session — never
+written to `chrome.storage` or anywhere else on disk. It's cleared whenever
+Chrome fully restarts, the extension is reloaded, or the service worker is
+recycled after a period of inactivity (Chrome can do this at any time in
+Manifest V3), and the user has to paste it into Settings again. `popup.js`
+resolves the effective PAT per-request via `resolveAuthPat()`, which
+returns `''` outright when sign-in method is `cookies` — so switching back
+never requires clearing anything first, and a leftover in-memory token is
+never silently applied outside PAT mode.
+
+This is a deliberate tradeoff over the simpler "save it to `chrome.storage`"
+approach, made to avoid persisting a credential-like secret to disk at all —
+worth keeping in mind if you're deciding whether this satisfies your
+organization's credential-handling policies, since that's a judgment call
+for your IT/security team, not something this extension can determine.
 
 ---
 
@@ -179,7 +191,12 @@ Taskboard/Backlog, Repos, or Pipelines view.
 **"Not signed in to Azure DevOps (401)"**
 If refreshing the ADO tab and re-scraping doesn't fix it, your org likely
 uses Azure AD sign-in and needs a Personal Access Token — see
-[Settings](#personal-access-token-azure-ad-orgs) above.
+[Settings](#sign-in-method-cookies-vs-personal-access-token) above.
+
+**"Enter your Personal Access Token in Settings…"**
+Sign-in method is set to `pat` but no token is currently cached in memory
+(it clears on browser restart, extension reload, or service-worker
+recycling — see above). Open Settings and paste it in again.
 
 **"ADO API error 403"**
 Your account does not have permission to read this project's work items.
@@ -201,4 +218,6 @@ scrape. If it still fails, refresh the Azure DevOps page and try again.
 All processing happens locally in your browser. No data is sent anywhere
 other than the Azure DevOps REST API of your organization (the same API
 your browser already calls when you view the board), and — for saved
-filter sets — Chrome's own sync storage.
+filter sets — Chrome's own sync storage. If you use Personal Access Token
+sign-in, the token itself is held only in memory for the current browser
+session and is never written to disk.

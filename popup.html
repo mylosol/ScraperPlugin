@@ -122,18 +122,30 @@
         <option value="column">By Column (alphabetical)</option>
       </select>
 
-      <label class="field-label mt-12" for="pat-input">
-        Personal Access Token
-        <span class="field-hint">Only needed if your org uses Azure AD sign-in</span>
+      <label class="field-label mt-12" for="auth-mode-select">
+        Sign-in method
       </label>
-      <input id="pat-input" class="text-input" type="password"
-             placeholder="Paste a PAT with Work Items (Read) + Project and Team (Read) scopes"
-             autocomplete="off" spellcheck="false" />
-      <p class="card-hint" style="margin-top:6px">
-        Create one under Azure DevOps → user icon → <strong>Personal access tokens</strong> →
-        New Token. Stored only in this browser (never synced) and used solely to call
-        your organization's API.
-      </p>
+      <select id="auth-mode-select" class="text-input">
+        <option value="cookies">Browser session (cookies)</option>
+        <option value="pat">Personal Access Token</option>
+      </select>
+
+      <div id="pat-field-group" style="display:none">
+        <label class="field-label mt-12" for="pat-input">
+          Personal Access Token
+          <span class="field-hint">Kept in memory only — never written to disk</span>
+        </label>
+        <input id="pat-input" class="text-input" type="password"
+               placeholder="Paste a PAT with Work Items (Read) + Project and Team (Read) scopes"
+               autocomplete="off" spellcheck="false" />
+        <p class="card-hint" style="margin-top:6px">
+          Create one under Azure DevOps → user icon → <strong>Personal access tokens</strong> →
+          New Token. This is held only in the extension's background memory for this
+          browser session — it clears when Chrome restarts, the extension reloads, or
+          after a period of inactivity, and you'll need to paste it again. It is never
+          written to chrome.storage or any other disk-backed location.
+        </p>
+      </div>
 
       <div class="row gap-8 mt-16">
         <button class="btn btn-primary flex-1" id="btn-save-settings">Save Settings</button>
