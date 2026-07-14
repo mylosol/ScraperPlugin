@@ -49,8 +49,8 @@ let state = {
   view:         'new-table', // 'new-table' | 'main' | 'settings' | 'rules'
   scraping:     false,
   settings: {
-    sortOrder:  'id',
-    pat:        '',
+    sortOrder: 'id',
+    authMode:  'cookies', // 'cookies' | 'pat' — the PAT value itself is never stored here
   },
   ruleSets:         [],   // [{id, name, rules}]
   activeRuleSetId:  null,
@@ -115,6 +115,8 @@ const DOM = {
   },
   settings: {
     sortOrderSelect:  $('sort-order-select'),
+    authModeSelect:   $('auth-mode-select'),
+    patFieldGroup:    $('pat-field-group'),
     patInput:         $('pat-input'),
     btnSave:          $('btn-save-settings'),
     btnClose:         $('btn-close-settings'),
@@ -134,9 +136,43 @@ async function loadState() {
       if (result[SETTINGS_KEY]) {
         state.settings = { ...state.settings, ...result[SETTINGS_KEY] };
       }
+      // Migration: an earlier version persisted the PAT itself to
+      // chrome.storage.local. Purge any leftover value now that PAT auth is
+      // in-memory-only (see background.js) — nothing should still be
+      // sitting on disk from before this change.
+      if (state.settings.pat) {
+        delete state.settings.pat;
+        saveState();
+      }
       resolve();
     });
   });
+}
+
+// The PAT itself lives only in the background service worker's memory,
+// never in chrome.storage — see background.js for why.
+function getInMemoryPat() {
+  return new Promise(resolve => {
+    chrome.runtime.sendMessage({ action: 'getInMemoryPat' }, resp => resolve(resp?.pat || ''));
+  });
+}
+
+function setInMemoryPat(pat) {
+  chrome.runtime.sendMessage({ action: 'setInMemoryPat', pat });
+}
+
+// Resolves the PAT to send with a scrape/lookup request, per the selected
+// auth mode. Cookie mode always sends '' (so a PAT left over in memory from
+// a previous session, if any, is never silently applied). PAT mode requires
+// one to actually be cached right now — fails clearly rather than falling
+// back to cookies, which we know doesn't work for orgs that need a PAT.
+async function resolveAuthPat() {
+  if (state.settings.authMode !== 'pat') return '';
+  const pat = await getInMemoryPat();
+  if (!pat) {
+    throw new Error('Enter your Personal Access Token in Settings (⚙) — it clears when the browser or extension restarts.');
+  }
+  return pat;
 }
 
 function saveState() {
@@ -447,6 +483,8 @@ async function doScrape() {
       throw new Error('Please navigate to an Azure DevOps Kanban Board first.');
     }
 
+    const pat = await resolveAuthPat();
+
     const response = await new Promise((resolve, reject) => {
       // Always inject the content script first. The guard in content.js
       // (window.__qaScraperLoaded) ensures duplicate injection is safe —
@@ -460,7 +498,7 @@ async function doScrape() {
           }
           // Small delay to let the script settle before messaging
           setTimeout(() => {
-            chrome.tabs.sendMessage(tab.id, { action: 'scrape', pat: state.settings.pat }, resp => {
+            chrome.tabs.sendMessage(tab.id, { action: 'scrape', pat }, resp => {
               if (chrome.runtime.lastError) {
                 reject(new Error(chrome.runtime.lastError.message));
               } else {
@@ -715,13 +753,15 @@ async function doLookup() {
       throw new Error('Navigate to an Azure DevOps page first so the scraper can use your session.');
     }
 
+    const pat = await resolveAuthPat();
+
     const response = await new Promise((resolve, reject) => {
       chrome.scripting.executeScript(
         { target: { tabId: tab.id }, files: ['content.js'] },
         () => {
           if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
           setTimeout(() => {
-            chrome.tabs.sendMessage(tab.id, { action: 'fetchCase', caseId, pat: state.settings.pat }, resp => {
+            chrome.tabs.sendMessage(tab.id, { action: 'fetchCase', caseId, pat }, resp => {
               if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
               else resolve(resp);
             });
@@ -1110,10 +1150,16 @@ function wireEvents() {
   });
 
   // Settings
-  DOM.header.btnSettings.addEventListener('click', () => {
-    DOM.settings.sortOrderSelect.value  = state.settings.sortOrder;
-    DOM.settings.patInput.value         = state.settings.pat;
+  DOM.header.btnSettings.addEventListener('click', async () => {
+    DOM.settings.sortOrderSelect.value = state.settings.sortOrder;
+    DOM.settings.authModeSelect.value  = state.settings.authMode;
+    DOM.settings.patFieldGroup.style.display = state.settings.authMode === 'pat' ? '' : 'none';
+    DOM.settings.patInput.value = await getInMemoryPat();
     showView('settings');
+  });
+
+  DOM.settings.authModeSelect.addEventListener('change', () => {
+    DOM.settings.patFieldGroup.style.display = DOM.settings.authModeSelect.value === 'pat' ? '' : 'none';
   });
 
   // Rule builder
@@ -1141,9 +1187,10 @@ function wireEvents() {
   });
 
   DOM.settings.btnSave.addEventListener('click', () => {
-    state.settings.sortOrder  = DOM.settings.sortOrderSelect.value;
-    state.settings.pat        = DOM.settings.patInput.value.trim();
+    state.settings.sortOrder = DOM.settings.sortOrderSelect.value;
+    state.settings.authMode  = DOM.settings.authModeSelect.value;
     saveState();
+    setInMemoryPat(DOM.settings.patInput.value.trim());
     showToast('✓ Settings saved.');
     if (getActiveTable()) renderMain();
     else showView('newTable');
